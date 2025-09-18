@@ -4,9 +4,14 @@ Test script for IRCTC booking automation
 Run this to test the complete booking flow
 """
 
+import os
+from dotenv import load_dotenv
 from services.irctc_automation import IRCTCAutomation
 import time
 import json
+
+# Load environment variables
+load_dotenv()
 
 def test_booking_flow():
     """Test the complete booking flow"""

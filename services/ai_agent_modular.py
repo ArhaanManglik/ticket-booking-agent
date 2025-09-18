@@ -10,6 +10,7 @@ from services.session_manager import SessionManager, SessionState
 from services.train_search import TrainSearchService, SearchFilters
 from services.response_handler import AIResponseHandler
 from services.datetime_processor import DateTimeProcessor
+from services.irctc_automation import IRCTCAutomation
 
 
 class ModularTrainBookingAgent:
@@ -26,6 +27,7 @@ class ModularTrainBookingAgent:
         self.train_search = TrainSearchService()
         self.response_handler = AIResponseHandler()
         self.datetime_processor = DateTimeProcessor()
+        self.irctc_automation = IRCTCAutomation()
         
         print("✅ Modular Train Booking Agent initialized with AI-powered components")
     
@@ -179,7 +181,7 @@ class ModularTrainBookingAgent:
     
     def _handle_train_selection(self, selected_train: Dict, session_id: str) -> Dict:
         """
-        Handle train selection by user
+        Handle train selection by user and trigger IRCTC automation
         
         Args:
             selected_train: Selected train information
@@ -206,7 +208,59 @@ class ModularTrainBookingAgent:
             session_id, 'assistant', response['message']
         )
         
+        # ✨ NEW: Trigger IRCTC automation if navigate_to_irctc action is present
+        if 'navigate_to_irctc' in response.get('actions', []):
+            try:
+                # Prepare booking data for IRCTC automation
+                booking_data = self._prepare_booking_data(session.travel_info, selected_train)
+                
+                print(f"🚀 Triggering IRCTC automation with data: {booking_data}")
+                
+                # Start IRCTC automation
+                automation_result = self.irctc_automation.start_booking(booking_data, session_id)
+                
+                # Update response with automation result
+                if automation_result.get('success'):
+                    response['message'] += f"\n\n✅ {automation_result['message']}"
+                    if 'next_steps' in automation_result:
+                        response['message'] += "\n\n📝 **Next Steps:**"
+                        for step in automation_result['next_steps']:
+                            response['message'] += f"\n• {step}"
+                else:
+                    response['message'] += f"\n\n❌ Automation failed: {automation_result.get('message', 'Unknown error')}"
+                
+                response['automation_result'] = automation_result
+                
+            except Exception as e:
+                error_msg = f"Error triggering IRCTC automation: {str(e)}"
+                print(f"❌ {error_msg}")
+                response['message'] += f"\n\n❌ {error_msg}"
+                response['automation_result'] = {'success': False, 'message': error_msg}
+        
         return response
+    
+    def _prepare_booking_data(self, travel_info: TravelInfo, selected_train: Dict) -> Dict:
+        """
+        Prepare booking data for IRCTC automation
+        
+        Args:
+            travel_info: Travel information from session
+            selected_train: Selected train details
+            
+        Returns:
+            Formatted booking data for IRCTC automation
+        """
+        return {
+            'source_city': travel_info.source_city,
+            'destination_city': travel_info.destination_city,
+            'travel_date': travel_info.travel_date,
+            'passengers': travel_info.passengers,
+            'class_preference': travel_info.class_preference or 'SL',
+            'time_preference': travel_info.time_preference,
+            'selected_train': selected_train,
+            'train_number': selected_train.get('trainNumber'),
+            'train_name': selected_train.get('trainName')
+        }
     
     def _create_search_filters(self, travel_info: TravelInfo) -> Optional[SearchFilters]:
         """
