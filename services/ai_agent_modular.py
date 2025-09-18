@@ -62,6 +62,10 @@ class ModularTrainBookingAgent:
                 if selected_train:
                     return self._handle_train_selection(selected_train, session_id)
             
+            # Check if user is selecting booking method (IRCTC vs eRail)
+            if session.current_step == 'booking_method_selection':
+                return self._handle_booking_method_selection(user_message, session_id)
+            
             # Extract information using AI
             conversation_context = self.session_manager.get_conversation_context(session_id)
             extracted_info = self.ai_extractor.extract_travel_information(
@@ -179,6 +183,65 @@ class ModularTrainBookingAgent:
         
         return response
     
+    def _handle_booking_method_selection(self, user_message: str, session_id: str) -> Dict:
+        """
+        Handle user selection of booking method (IRCTC vs eRail)
+        
+        Args:
+            user_message: User's method selection message  
+            session_id: Session identifier
+            
+        Returns:
+            Response dictionary
+        """
+        session = self.session_manager.get_session(session_id)
+        
+        # Get stored booking data from session
+        if session and session.selected_train:
+            booking_data = {
+                'train': session.selected_train,
+                'travel_info': session.travel_info.__dict__ if session.travel_info else {},
+                'erail_url': f"https://erail.in/train-enquiry/{session.selected_train.get('trainNumber', '')}#"
+            }
+        else:
+            # Fallback error response
+            return {
+                'message': "Sorry, I couldn't find the selected train information. Please select a train again.",
+                'actions': []
+            }
+        
+        # Use response handler to process the selection
+        response = self.response_handler.handle_booking_method_selection(user_message, booking_data)
+        
+        # Add conversation message
+        self.session_manager.add_conversation_message(
+            session_id, 'assistant', response['message']
+        )
+        
+        # Handle different actions
+        if 'navigate_to_irctc' in response.get('actions', []):
+            try:
+                # Trigger IRCTC automation
+                automation_result = self.irctc_automation.start_booking(booking_data, session_id)
+                
+                if automation_result.get('success'):
+                    response['message'] += f"<br><br>✅ {automation_result['message']}"
+                else:
+                    response['message'] += f"<br><br>❌ IRCTC automation failed: {automation_result.get('message', 'Unknown error')}"
+                
+                response['automation_result'] = automation_result
+                
+            except Exception as e:
+                error_msg = f"Error with IRCTC automation: {str(e)}"
+                response['message'] += f"<br><br>❌ {error_msg}"
+                response['automation_result'] = {'success': False, 'message': error_msg}
+        
+        elif 'open_erail_link' in response.get('actions', []):
+            # Update session step to completed
+            self.session_manager.update_session_step(session_id, 'completed')
+        
+        return response
+    
     def _handle_train_selection(self, selected_train: Dict, session_id: str) -> Dict:
         """
         Handle train selection by user and trigger IRCTC automation
@@ -208,7 +271,7 @@ class ModularTrainBookingAgent:
             session_id, 'assistant', response['message']
         )
         
-        # ✨ NEW: Trigger IRCTC automation if navigate_to_irctc action is present
+        # ✨ NEW: Handle different actions based on response
         if 'navigate_to_irctc' in response.get('actions', []):
             try:
                 # Prepare booking data for IRCTC automation
@@ -236,6 +299,11 @@ class ModularTrainBookingAgent:
                 print(f"❌ {error_msg}")
                 response['message'] += f"\n\n❌ {error_msg}"
                 response['automation_result'] = {'success': False, 'message': error_msg}
+        
+        elif 'await_booking_method_selection' in response.get('actions', []):
+            # Update session to await booking method selection
+            self.session_manager.update_session_step(session_id, 'booking_method_selection')
+            # Booking data is already stored in selected_train and travel_info
         
         return response
     
@@ -316,6 +384,21 @@ class ModularTrainBookingAgent:
             'response_type': 'error',
             'actions': ['await_retry']
         }
+    
+    def handle_booking_method_selection(self, method: str, session_id: str) -> Dict[str, Any]:
+        """
+        Public method to handle booking method selection from user
+        
+        Args:
+            method: Selected booking method ('irctc' or 'erail')
+            session_id: Session identifier
+            
+        Returns:
+            Response dictionary with message and actions
+        """
+        # Convert method selection to a message for processing
+        method_message = f"I want to book via {method}"
+        return self._handle_booking_method_selection(method_message, session_id)
     
     def get_session_summary(self, session_id: str) -> Dict:
         """

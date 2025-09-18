@@ -61,11 +61,50 @@ def book_train():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/action', methods=['POST'])
+def handle_action():
+    """Handle action button clicks"""
+    try:
+        action_data = request.json
+        if not action_data:
+            return jsonify({'error': 'No action data provided'}), 400
+            
+        action_type = action_data.get('action_type')
+        data = action_data.get('action_data', {})
+        session_id = session.get('session_id')
+        
+        if not action_type:
+            return jsonify({'error': 'No action type provided'}), 400
+        
+        if not session_id:
+            return jsonify({'error': 'No session ID found'}), 400
+        
+        # Handle different action types
+        if action_type == 'booking_method_selection':
+            response = ai_agent.handle_booking_method_selection(data.get('method', ''), session_id)
+            return jsonify({
+                'response': response['message'],
+                'actions': response.get('actions', [])
+            })
+        elif action_type == 'open_url':
+            # URL opening is handled on frontend, just acknowledge
+            return jsonify({
+                'response': 'Opening booking page in new tab...'
+            })
+        else:
+            return jsonify({'error': 'Unknown action type'}), 400
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/session_summary', methods=['GET'])
 def get_session_summary():
     """Get current session summary with AI-extracted information"""
     try:
         session_id = session.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'No session ID found'}), 400
+            
         summary = ai_agent.get_session_summary(session_id)
         return jsonify(summary)
     except Exception as e:
@@ -76,6 +115,9 @@ def get_conversation_history():
     """Get conversation history"""
     try:
         session_id = session.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'No session ID found'}), 400
+            
         limit = request.args.get('limit', 10, type=int)
         history = ai_agent.get_conversation_history(session_id, limit)
         return jsonify(history)
@@ -87,6 +129,9 @@ def get_alternatives():
     """Get alternative suggestions using AI"""
     try:
         session_id = session.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'No session ID found'}), 400
+            
         alternatives = ai_agent.get_alternative_suggestions(session_id)
         return jsonify(alternatives)
     except Exception as e:
@@ -97,6 +142,9 @@ def reset_session():
     """Reset current session"""
     try:
         session_id = session.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'No session ID found'}), 400
+            
         success = ai_agent.reset_session(session_id)
         return jsonify({'success': success})
     except Exception as e:

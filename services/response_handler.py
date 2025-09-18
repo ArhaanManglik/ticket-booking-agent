@@ -311,7 +311,7 @@ class AIResponseHandler:
     def generate_selection_confirmation(self, selected_train: Dict, 
                                       travel_info: TravelInfo) -> Dict:
         """
-        Generate confirmation for train selection
+        Generate confirmation for train selection with automatic eRail redirect
         
         Args:
             selected_train: Selected train information
@@ -321,23 +321,40 @@ class AIResponseHandler:
             Response dictionary
         """
         train_name = f"{selected_train.get('trainNumber', 'N/A')} - {selected_train.get('trainName', 'Unknown')}"
+        train_number = selected_train.get('trainNumber', '')
         
-        message = f"""✅ Excellent choice!<br><br>
+        message = f"""✅ Perfect! I've found your train.<br><br>
 
 🚂 Selected Train: {train_name}<br>
 📍 Route: {travel_info.source_city} → {travel_info.destination_city}<br>
 📅 Date: {travel_info.travel_date}<br>
 👥 Passengers: {travel_info.passengers}<br><br>
 
-I'll now proceed to the IRCTC website to complete your booking. Please wait while I navigate and fill in the details..."""
+🔗 <strong>Opening detailed train information on eRail for manual booking...</strong><br><br>
+
+You'll be redirected to view complete details for train {train_number} where you can:<br>
+• Check real-time availability<br>
+• View fare details<br>
+• Book tickets manually<br>
+• See route and timing information"""
+        
+        # Create eRail URL with train number
+        erail_url = f"https://erail.in/train-enquiry/{train_number}"
         
         return {
             'message': message,
             'response_type': 'confirmation',
-            'actions': ['navigate_to_irctc'],
+            'actions': [
+                {
+                    'type': 'open_url',
+                    'text': f'🚀 Open Train {train_number} Details',
+                    'data': {'url': erail_url, 'train_info': selected_train}
+                }
+            ],
             'booking_data': {
                 'train': selected_train,
-                'travel_info': travel_info.__dict__
+                'travel_info': travel_info.__dict__,
+                'erail_url': erail_url
             }
         }
     
@@ -383,6 +400,78 @@ I'll now proceed to the IRCTC website to complete your booking. Please wait whil
                     return train
         
         return None
+    
+    def handle_booking_method_selection(self, user_message: str, booking_data: Dict) -> Dict:
+        """
+        Handle user selection of booking method (IRCTC vs eRail)
+        
+        Args:
+            user_message: User's method selection message
+            booking_data: Booking data with train and travel info
+            
+        Returns:
+            Response dictionary with appropriate action
+        """
+        msg_lower = user_message.lower().strip()
+        
+        # Check for IRCTC booking selection
+        if any(phrase in msg_lower for phrase in ['book on irctc', 'irctc', '1', 'book automatically', 'automatic']):
+            train_name = f"{booking_data['train'].get('trainNumber', 'N/A')} - {booking_data['train'].get('trainName', 'Unknown')}"
+            
+            message = f"""🎫 Perfect! I'll proceed with IRCTC booking for {train_name}.<br><br>
+
+Please wait while I navigate to IRCTC and fill in the details automatically..."""
+            
+            return {
+                'message': message,
+                'response_type': 'confirmation',
+                'actions': ['navigate_to_irctc'],
+                'booking_data': booking_data
+            }
+        
+        # Check for eRail information selection
+        elif any(phrase in msg_lower for phrase in ['view details', 'erail', '2', 'manual', 'information', 'details']):
+            train_name = f"{booking_data['train'].get('trainNumber', 'N/A')} - {booking_data['train'].get('trainName', 'Unknown')}"
+            erail_url = booking_data.get('erail_url', '')
+            
+            message = f"""📋 Great choice! Here's what I'll do:<br><br>
+
+🚂 <strong>Train:</strong> {train_name}<br>
+📍 <strong>Route:</strong> {booking_data['travel_info']['source_city']} → {booking_data['travel_info']['destination_city']}<br>
+📅 <strong>Date:</strong> {booking_data['travel_info']['travel_date']}<br><br>
+
+I'll open the detailed train information page where you can:<br>
+• View complete train schedule and stops<br>
+• Check seat availability and fare<br>
+• Book manually on your preferred platform<br><br>
+
+<a href="{erail_url}" target="_blank" style="background: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">🔗 View Train Details on eRail</a><br><br>
+
+Would you like me to search for more trains or help with anything else?"""
+            
+            return {
+                'message': message,
+                'response_type': 'success',
+                'actions': ['open_erail_link'],
+                'erail_url': erail_url,
+                'booking_data': booking_data
+            }
+        
+        else:
+            # User didn't clearly select an option
+            message = """I didn't quite understand your choice. Please select one of these options:<br><br>
+
+• Type "1" or "Book on IRCTC" for automatic booking<br>
+• Type "2" or "View details" for manual booking with train information<br><br>
+
+Which option would you prefer?"""
+            
+            return {
+                'message': message,
+                'response_type': 'clarification',
+                'actions': ['await_booking_method_selection'],
+                'booking_data': booking_data
+            }
     
     def _build_conversation_context(self, session_state: SessionState) -> str:
         """Build conversation context string"""

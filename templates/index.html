@@ -183,6 +183,36 @@
             margin-bottom: 10px;
             color: #333;
         }
+        
+        .action-buttons {
+            margin-top: 10px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .action-btn {
+            padding: 8px 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s ease;
+        }
+        
+        .action-btn:hover {
+            background: #0056b3;
+        }
+        
+        .action-btn.secondary {
+            background: #6c757d;
+        }
+        
+        .action-btn.secondary:hover {
+            background: #545b62;
+        }
     </style>
 </head>
 <body>
@@ -267,9 +297,14 @@
                 if (data.error) {
                     addMessage('Sorry, I encountered an error: ' + data.error, 'assistant');
                 } else {
-                    addMessage(data.response, 'assistant');
+                    addMessage(data.response, 'assistant', data.actions);
                     
-                    // Don't show visual train results - keep it conversational only
+                    // Auto-click eRail button if it's the only action
+                    if (data.actions && data.actions.length === 1 && data.actions[0].type === 'open_url') {
+                        setTimeout(() => {
+                            handleActionClick(data.actions[0]);
+                        }, 1000); // Wait 1 second before auto-clicking
+                    }
                 }
                 
                 messageInput.focus();
@@ -282,7 +317,7 @@
             });
         }
 
-        function addMessage(content, sender) {
+        function addMessage(content, sender, actions = null) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${sender}`;
             
@@ -291,9 +326,68 @@
             contentDiv.innerHTML = content;
             
             messageDiv.appendChild(contentDiv);
-            chatMessages.appendChild(messageDiv);
             
+            // Add action buttons if provided
+            if (actions && actions.length > 0) {
+                const actionContainer = document.createElement('div');
+                actionContainer.className = 'action-buttons';
+                
+                actions.forEach(action => {
+                    const button = document.createElement('button');
+                    button.className = 'action-btn';
+                    if (action.style === 'secondary') {
+                        button.classList.add('secondary');
+                    }
+                    button.textContent = action.text;
+                    button.onclick = () => handleActionClick(action);
+                    actionContainer.appendChild(button);
+                });
+                
+                contentDiv.appendChild(actionContainer);
+            }
+            
+            chatMessages.appendChild(messageDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function handleActionClick(action) {
+            // Disable all action buttons to prevent multiple clicks
+            document.querySelectorAll('.action-btn').forEach(btn => {
+                btn.disabled = true;
+                btn.style.opacity = '0.6';
+            });
+            
+            // Send action to backend
+            fetch('/action', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    action_type: action.type, 
+                    action_data: action.data || {} 
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    addMessage('Sorry, I encountered an error: ' + data.error, 'assistant');
+                } else {
+                    if (action.type === 'open_url') {
+                        // Open URL in new tab
+                        window.open(action.data.url, '_blank');
+                        addMessage(data.response, 'assistant');
+                    } else {
+                        addMessage(data.response, 'assistant', data.actions);
+                    }
+                }
+                
+                messageInput.focus();
+            })
+            .catch(error => {
+                addMessage('Sorry, I encountered a network error. Please try again.', 'assistant');
+                messageInput.focus();
+            });
         }
 
         function showTypingIndicator() {

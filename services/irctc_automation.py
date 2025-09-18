@@ -576,6 +576,22 @@ Would you like me to help you with manual installation?
             
             # Click search with multiple selectors
             print("   🔍 Clicking search...")
+            
+            # First, let's debug what elements are actually on the page
+            print("   🔍 Debugging: Looking for search elements...")
+            all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            print(f"   📊 Found {len(all_buttons)} buttons on page")
+            
+            for i, button in enumerate(all_buttons[:10]):  # Check first 10 buttons
+                try:
+                    button_text = button.text.strip()
+                    button_class = button.get_attribute("class")
+                    button_type = button.get_attribute("type")
+                    button_label = button.get_attribute("label")
+                    print(f"   🔘 Button {i}: text='{button_text}', class='{button_class}', type='{button_type}', label='{button_label}'")
+                except:
+                    pass
+            
             search_selectors = [
                 "//button[@label='Find Trains' and @class='search_btn train_Search']",
                 "//button[@label='Find Trains']",
@@ -592,40 +608,57 @@ Would you like me to help you with manual installation?
             ]
             
             search_clicked = False
-            for selector in search_selectors:
+            for i, selector in enumerate(search_selectors):
                 try:
+                    print(f"   🔄 Trying selector {i+1}/{len(search_selectors)}: {selector}")
+                    
                     # Method 1: Wait for element to be clickable and click
                     search_button = self.wait.until(
                         EC.element_to_be_clickable((By.XPATH, selector))
                     )
                     
+                    print(f"   ✅ Found clickable element with selector: {selector}")
+                    
+                    # Get element details for debugging
+                    try:
+                        element_text = search_button.text.strip()
+                        element_class = search_button.get_attribute("class")
+                        element_type = search_button.get_attribute("type")
+                        element_label = search_button.get_attribute("label")
+                        print(f"   📝 Element details: text='{element_text}', class='{element_class}', type='{element_type}', label='{element_label}'")
+                    except:
+                        pass
+                    
                     # Try standard click first
                     try:
+                        print("   🖱️ Attempting standard click...")
                         search_button.click()
                         search_clicked = True
                         print(f"   ✅ Search clicked with standard click: {selector}")
                         break
-                    except:
-                        print(f"   ⚠️ Standard click failed, trying JavaScript click...")
+                    except Exception as click_error:
+                        print(f"   ⚠️ Standard click failed: {str(click_error)}")
                     
                     # Method 2: JavaScript click (works around overlay issues)
                     try:
+                        print("   🖱️ Attempting JavaScript click...")
                         self.driver.execute_script("arguments[0].click();", search_button)
                         search_clicked = True
                         print(f"   ✅ Search clicked with JavaScript: {selector}")
                         break
-                    except:
-                        print(f"   ⚠️ JavaScript click failed, trying ActionChains...")
+                    except Exception as js_error:
+                        print(f"   ⚠️ JavaScript click failed: {str(js_error)}")
                     
                     # Method 3: ActionChains (handles complex interactions)
                     try:
+                        print("   🖱️ Attempting ActionChains click...")
                         actions = ActionChains(self.driver)
                         actions.move_to_element(search_button).click().perform()
                         search_clicked = True
                         print(f"   ✅ Search clicked with ActionChains: {selector}")
                         break
-                    except:
-                        print(f"   ⚠️ ActionChains click failed...")
+                    except Exception as action_error:
+                        print(f"   ⚠️ ActionChains click failed: {str(action_error)}")
                         
                 except Exception as e:
                     print(f"   ❌ Search selector failed: {selector}, error: {str(e)}")
