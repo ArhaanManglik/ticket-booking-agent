@@ -279,12 +279,12 @@ class AIResponseHandler:
         source_station = search_results['source_station']
         dest_station = search_results['destination_station']
         
-        # Build response message
+        # Build response message for HTML chatbot UI
         message_parts = []
         
         # Header
-        header = f"🚂 **Found {len(trains)} trains from {source_station['name']} to {dest_station['name']}**\n"
-        header += f"📅 **Date:** {travel_info.travel_date} | 👥 **Passengers:** {travel_info.passengers}\n\n"
+        header = f"🚂 Found {len(trains)} trains from {source_station['name']} to {dest_station['name']}<br>"
+        header += f"📅 Date: {travel_info.travel_date} | 👥 Passengers: {travel_info.passengers}<br><br>"
         message_parts.append(header)
         
         # Train details
@@ -293,8 +293,8 @@ class AIResponseHandler:
             arr_time = self._format_time(train.get('toStationSchedule', {}).get('arrivalMinutes', 0))
             duration = self._calculate_journey_time(train)
             
-            train_info = f"**{i}. {train.get('trainNumber', 'N/A')} - {train.get('trainName', 'Unknown')}**\n"
-            train_info += f"   🚂 {dept_time} → {arr_time} ({duration})\n\n"
+            train_info = f"{i}. {train.get('trainNumber', 'N/A')} - {train.get('trainName', 'Unknown')}<br>"
+            train_info += f"&nbsp;&nbsp;&nbsp;🚂 {dept_time} → {arr_time} ({duration})<br><br>"
             message_parts.append(train_info)
         
         # Footer
@@ -322,12 +322,12 @@ class AIResponseHandler:
         """
         train_name = f"{selected_train.get('trainNumber', 'N/A')} - {selected_train.get('trainName', 'Unknown')}"
         
-        message = f"""✅ **Excellent choice!**
+        message = f"""✅ Excellent choice!<br><br>
 
-🚂 **Selected Train:** {train_name}
-📍 **Route:** {travel_info.source_city} → {travel_info.destination_city}
-📅 **Date:** {travel_info.travel_date}
-👥 **Passengers:** {travel_info.passengers}
+🚂 Selected Train: {train_name}<br>
+📍 Route: {travel_info.source_city} → {travel_info.destination_city}<br>
+📅 Date: {travel_info.travel_date}<br>
+👥 Passengers: {travel_info.passengers}<br><br>
 
 I'll now proceed to the IRCTC website to complete your booking. Please wait while I navigate and fill in the details..."""
         

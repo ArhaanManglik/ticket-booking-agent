@@ -188,11 +188,50 @@ class AIInformationExtractor:
                     pass
             
             # Return empty TravelInfo if extraction failed
-            return TravelInfo()
+            return self._fallback_extraction(user_message)
             
         except Exception as e:
             print(f"Error in AI extraction: {e}")
-            return TravelInfo()
+            return self._fallback_extraction(user_message)
+    
+    def _fallback_extraction(self, user_message: str) -> TravelInfo:
+        """
+        Fallback extraction using pattern matching when AI fails
+        
+        Args:
+            user_message: User's message
+            
+        Returns:
+            TravelInfo with basic pattern-matched information
+        """
+        message_lower = user_message.lower().strip()
+        travel_info = TravelInfo()
+        
+        # Time preference patterns
+        time_patterns = {
+            'morning': ['morning', 'am', 'a.m.', 'early', 'dawn'],
+            'afternoon': ['afternoon', 'noon', 'lunch', 'midday'],
+            'evening': ['evening', 'pm', 'p.m.', 'late', 'dusk'],
+            'night': ['night', 'midnight', 'late night']
+        }
+        
+        # Check for time preferences
+        for preference, keywords in time_patterns.items():
+            if any(keyword in message_lower for keyword in keywords):
+                travel_info.time_preference = preference
+                break
+        
+        # Check for "after X AM/PM" patterns
+        if 'after' in message_lower and ('am' in message_lower or 'a.m.' in message_lower):
+            travel_info.time_preference = 'morning'
+        elif 'after' in message_lower and ('pm' in message_lower or 'p.m.' in message_lower):
+            travel_info.time_preference = 'evening'
+        
+        # Check for "anytime" - treat as flexible morning preference
+        if 'anytime' in message_lower or 'any time' in message_lower:
+            travel_info.time_preference = 'anytime'
+        
+        return travel_info
     
     def extract_date_time_specifically(self, user_message: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
@@ -374,12 +413,20 @@ class AIInformationExtractor:
         """
         merged = TravelInfo()
         
-        # For each field, prefer new information if it exists, otherwise keep existing
+        # For each field, prefer new information if it exists and is meaningful, otherwise keep existing
         for field in existing.__dataclass_fields__:
             existing_value = getattr(existing, field)
             new_value = getattr(new, field)
             
-            if new_value is not None:
+            # Check if new_value is meaningful (not None, not empty string, not empty list)
+            is_new_meaningful = (
+                new_value is not None and 
+                new_value != "" and 
+                new_value != [] and
+                str(new_value).strip() != ""
+            )
+            
+            if is_new_meaningful:
                 setattr(merged, field, new_value)
             elif existing_value is not None:
                 setattr(merged, field, existing_value)
