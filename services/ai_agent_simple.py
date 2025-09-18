@@ -43,16 +43,34 @@ Be conversational, friendly, and helpful. Extract information naturally from use
             session = self.sessions[session_id]
             session['conversation'].append(f"User: {user_message}")
             
+            print(f"Processing message: '{user_message}'")
+            print(f"Current booking data: {session['booking_data']}")
+            
+            # Handle very short or unclear messages
+            if len(user_message.strip()) <= 2 and user_message.strip().lower() not in ['ok', 'yes', 'no']:
+                missing_info = self._get_missing_info(session['booking_data'])
+                if missing_info:
+                    return {
+                        'message': f"I didn't quite understand that. Could you please tell me your {missing_info[0].replace('_', ' ')}?",
+                        'actions': []
+                    }
+            
             # Check if user is selecting a train
             if session['available_trains'] and self._looks_like_train_selection(user_message):
                 return self._handle_train_selection(user_message, session_id)
             
             # Extract information from message
             extracted_info = self._extract_info_simple(user_message, session_id)
-            session['booking_data'].update(extracted_info)
+            print(f"Extracted info: {extracted_info}")
+            
+            # Only update if we extracted something meaningful
+            if extracted_info:
+                session['booking_data'].update(extracted_info)
+                print(f"Updated booking data: {session['booking_data']}")
             
             # Check what we need next
             missing_info = self._get_missing_info(session['booking_data'])
+            print(f"Missing info: {missing_info}")
             
             if not missing_info:
                 # We have enough info, search for trains
@@ -63,69 +81,94 @@ Be conversational, friendly, and helpful. Extract information naturally from use
             
         except Exception as e:
             print(f"Error processing message: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'message': "I'm having trouble processing your request. Could you please try again?",
                 'actions': []
             }
     
     def _extract_info_simple(self, user_message: str, session_id: str) -> Dict:
-        """Extract booking information using Gemini AI"""
+        """Extract booking information using simple pattern matching with AI fallback"""
         session = self.sessions[session_id]
         current_data = session['booking_data']
+        extracted = {}
+        msg_lower = user_message.lower().strip()
         
-        # Create extraction prompt for Gemini
-        prompt = f"""Extract travel booking information from this user message: "{user_message}"
-
-Current booking data: {json.dumps(current_data, indent=2)}
-
-Extract any new information and return ONLY a JSON object with these fields (only include fields that are clearly mentioned):
-- source_city: departure city name (like "Delhi", "Mumbai", "Bangalore")
-- destination_city: arrival city name  
-- travel_date: date mentioned (like "tomorrow", "Monday", "25th September")
-- passengers: number of people traveling
-- time_preference: time of day preference (like "morning", "evening", "after 8AM")
-
-Examples:
-"I want to go from Delhi to Mumbai" -> {{"source_city": "Delhi", "destination_city": "Mumbai"}}
-"delhi" -> {{"source_city": "Delhi"}}
-"I will depart from delhi" -> {{"source_city": "Delhi"}}
-"going to bangalore tomorrow" -> {{"destination_city": "Bangalore", "travel_date": "tomorrow"}}
-"2 passengers" -> {{"passengers": 2}}
-
-Return only valid JSON, nothing else:"""
-
-        try:
-            response = self.model.generate_content(prompt)
-            result_text = response.text.strip()
-            
-            # Clean the response to extract JSON
-            if '```json' in result_text:
-                result_text = result_text.split('```json')[1].split('```')[0].strip()
-            elif '```' in result_text:
-                result_text = result_text.split('```')[1].strip()
-            
-            # Parse JSON
-            if result_text and result_text != '{}':
-                extracted = json.loads(result_text)
-                return extracted
-            else:
-                return {}
-                
-        except Exception as e:
-            print(f"Error extracting info with AI: {e}")
-            # Fallback to simple pattern matching for basic cases
-            extracted = {}
-            msg_lower = user_message.lower()
-            
-            # Simple fallback for single city mentions
-            if 'delhi' in msg_lower:
-                extracted['source_city'] = 'Delhi'
-            elif 'mumbai' in msg_lower or 'bombay' in msg_lower:
-                extracted['source_city'] = 'Mumbai'
-            elif 'bangalore' in msg_lower or 'bengaluru' in msg_lower:
-                extracted['source_city'] = 'Bangalore'
-            
-            return extracted
+        # Simple pattern matching first (more reliable)
+        
+        # City mappings
+        city_map = {
+            'delhi': 'Delhi',
+            'new delhi': 'Delhi', 
+            'mumbai': 'Mumbai',
+            'bombay': 'Mumbai',
+            'bangalore': 'Bangalore',
+            'bengaluru': 'Bangalore',
+            'chennai': 'Chennai',
+            'madras': 'Chennai',
+            'kolkata': 'Kolkata',
+            'calcutta': 'Kolkata',
+            'hyderabad': 'Hyderabad',
+            'pune': 'Pune',
+            'chandigarh': 'Chandigarh',
+            'jaipur': 'Jaipur',
+            'agra': 'Agra',
+            'goa': 'Goa'
+        }
+        
+        # Extract cities
+        for key, city in city_map.items():
+            if key in msg_lower:
+                # Determine if source or destination
+                if 'from' in msg_lower and key in msg_lower[msg_lower.find('from'):]:
+                    extracted['source_city'] = city
+                elif 'to' in msg_lower and key in msg_lower[msg_lower.find('to'):]:
+                    extracted['destination_city'] = city
+                elif not current_data.get('source_city'):
+                    extracted['source_city'] = city
+                elif not current_data.get('destination_city') and city != current_data.get('source_city'):
+                    extracted['destination_city'] = city
+                break
+        
+        # Extract numbers for passengers
+        import re
+        numbers = re.findall(r'\b(\d+)\b', user_message)
+        if numbers:
+            num = int(numbers[0])
+            if 1 <= num <= 10:  # Reasonable passenger count
+                extracted['passengers'] = num
+        
+        # Extract dates
+        date_patterns = {
+            'today': 'today',
+            'tomorrow': 'tomorrow', 
+            'monday': 'Monday',
+            'tuesday': 'Tuesday',
+            'wednesday': 'Wednesday', 
+            'thursday': 'Thursday',
+            'friday': 'Friday',
+            'saturday': 'Saturday',
+            'sunday': 'Sunday'
+        }
+        
+        for pattern, date in date_patterns.items():
+            if pattern in msg_lower:
+                extracted['travel_date'] = date
+                break
+        
+        # Extract time preferences
+        if 'morning' in msg_lower:
+            extracted['time_preference'] = 'morning'
+        elif 'evening' in msg_lower:
+            extracted['time_preference'] = 'evening'
+        elif 'afternoon' in msg_lower:
+            extracted['time_preference'] = 'afternoon'
+        elif 'night' in msg_lower:
+            extracted['time_preference'] = 'night'
+        
+        print(f"Extracted from '{user_message}': {extracted}")
+        return extracted
     
     def _get_missing_info(self, booking_data: Dict) -> List[str]:
         """Get list of missing required information"""
@@ -147,29 +190,20 @@ Return only valid JSON, nothing else:"""
         session = self.sessions[session_id]
         booking_data = session['booking_data']
         
-        # Create context for AI
-        context = f"Current booking data: {json.dumps(booking_data, indent=2)}"
-        prompt = f"""{self.system_prompt}
-
-{context}
-
-The user is missing: {missing_field}
-
-Generate a natural, friendly response asking for this information. Be conversational and helpful.
-Don't be robotic. Acknowledge what they've already provided if anything."""
-
-        try:
-            response = self.model.generate_content(prompt)
-            message = response.text.strip()
-        except Exception as e:
-            # Fallback messages
-            fallback_messages = {
-                'source_city': "I'd love to help you book a train ticket! Which city are you traveling from?",
-                'destination_city': f"Great! From {booking_data.get('source_city', 'there')}, where would you like to go?",
-                'travel_date': f"Perfect! From {booking_data.get('source_city', '')} to {booking_data.get('destination_city', '')}. What date would you like to travel?",
-                'passengers': "How many passengers will be traveling?"
-            }
-            message = fallback_messages.get(missing_field, "Could you provide more details about your travel plans?")
+        # Generate more direct, contextual messages
+        if missing_field == 'source_city':
+            message = "I'd be happy to help you book a train ticket! Which city are you traveling from?"
+        elif missing_field == 'destination_city':
+            source = booking_data.get('source_city', 'there')
+            message = f"Great! You're traveling from {source}. Where would you like to go?"
+        elif missing_field == 'travel_date':
+            source = booking_data.get('source_city', '')
+            dest = booking_data.get('destination_city', '')
+            message = f"Perfect! From {source} to {dest}. What date would you like to travel? (e.g., today, tomorrow, Monday)"
+        elif missing_field == 'passengers':
+            message = "How many passengers will be traveling?"
+        else:
+            message = "Could you provide more details about your travel plans?"
         
         session['conversation'].append(f"Assistant: {message}")
         

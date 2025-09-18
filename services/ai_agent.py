@@ -6,12 +6,12 @@ import re
 from services.railradar_api import RailRadarAPI
 
 class TrainBookingAgent:
-    """AI-First Train Booking Assistant using Gemini and RailRadar API"""
+    """AI Train Booking Assistant using Gemini and RailRadar API"""
     
     def __init__(self):
         # Configure Gemini
         genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        self.model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Initialize RailRadar API
         self.railradar = RailRadarAPI()
@@ -19,48 +19,116 @@ class TrainBookingAgent:
         # Session storage (use database in production)
         self.sessions = {}
         
+        # Hardcoded station mapping for major cities
+        self.station_map = {
+            'delhi': {'code': 'NDLS', 'name': 'New Delhi'},
+            'new delhi': {'code': 'NDLS', 'name': 'New Delhi'},
+            'mumbai': {'code': 'CSTM', 'name': 'Mumbai CST'},
+            'bombay': {'code': 'CSTM', 'name': 'Mumbai CST'},
+            'bangalore': {'code': 'SBC', 'name': 'Bengaluru City'},
+            'bengaluru': {'code': 'SBC', 'name': 'Bengaluru City'},
+            'chennai': {'code': 'MAS', 'name': 'Chennai Central'},
+            'madras': {'code': 'MAS', 'name': 'Chennai Central'},
+            'kolkata': {'code': 'HWH', 'name': 'Howrah Junction'},
+            'calcutta': {'code': 'HWH', 'name': 'Howrah Junction'},
+            'hyderabad': {'code': 'SC', 'name': 'Secunderabad'},
+            'pune': {'code': 'PUNE', 'name': 'Pune Junction'},
+            'ahmedabad': {'code': 'ADI', 'name': 'Ahmedabad Junction'},
+            'jaipur': {'code': 'JP', 'name': 'Jaipur Junction'},
+            'chandigarh': {'code': 'CDG', 'name': 'Chandigarh'},
+            'lucknow': {'code': 'LJN', 'name': 'Lucknow Junction'},
+            'agra': {'code': 'AGC', 'name': 'Agra Cantt'},
+            'jodhpur': {'code': 'JU', 'name': 'Jodhpur Junction'},
+            'udaipur': {'code': 'UDZ', 'name': 'Udaipur City'},
+            'goa': {'code': 'MAO', 'name': 'Madgaon'},
+            'madgaon': {'code': 'MAO', 'name': 'Madgaon'},
+            'bhopal': {'code': 'BPL', 'name': 'Bhopal Junction'},
+            'indore': {'code': 'INDB', 'name': 'Indore Junction'},
+            'nagpur': {'code': 'NGP', 'name': 'Nagpur Junction'},
+            'kochi': {'code': 'ERS', 'name': 'Ernakulam Junction'},
+            'cochin': {'code': 'ERS', 'name': 'Ernakulam Junction'},
+            'thiruvananthapuram': {'code': 'TVC', 'name': 'Thiruvananthapuram Central'},
+            'trivandrum': {'code': 'TVC', 'name': 'Thiruvananthapuram Central'},
+            'coimbatore': {'code': 'CBE', 'name': 'Coimbatore Junction'},
+            'madurai': {'code': 'MDU', 'name': 'Madurai Junction'},
+            'visakhapatnam': {'code': 'VSKP', 'name': 'Visakhapatnam Junction'},
+            'vizag': {'code': 'VSKP', 'name': 'Visakhapatnam Junction'},
+            'bhubaneswar': {'code': 'BBS', 'name': 'Bhubaneswar'},
+            'guwahati': {'code': 'GHY', 'name': 'Guwahati'},
+            'patna': {'code': 'PNBE', 'name': 'Patna Junction'},
+            'ranchi': {'code': 'RNC', 'name': 'Ranchi Junction'},
+            'jammu': {'code': 'JAT', 'name': 'Jammu Tawi'},
+            'srinagar': {'code': 'SINA', 'name': 'Srinagar'},
+            'dehradun': {'code': 'DDN', 'name': 'Dehradun'},
+            'haridwar': {'code': 'HW', 'name': 'Haridwar Junction'},
+            'rishikesh': {'code': 'RKSH', 'name': 'Rishikesh'},
+            'amritsar': {'code': 'ASR', 'name': 'Amritsar Junction'},
+            'jalandhar': {'code': 'JRC', 'name': 'Jalandhar City'},
+            'ludhiana': {'code': 'LDH', 'name': 'Ludhiana Junction'},
+            'shimla': {'code': 'SML', 'name': 'Shimla'},
+            'manali': {'code': 'MNLI', 'name': 'Manali'},
+            'varanasi': {'code': 'BSB', 'name': 'Varanasi Junction'},
+            'allahabad': {'code': 'ALLP', 'name': 'Prayagraj Junction'},
+            'prayagraj': {'code': 'ALLP', 'name': 'Prayagraj Junction'},
+            'kanpur': {'code': 'CNB', 'name': 'Kanpur Central'},
+            'gorakhpur': {'code': 'GKP', 'name': 'Gorakhpur Junction'},
+            'mathura': {'code': 'MTJ', 'name': 'Mathura Junction'},
+            'vrindavan': {'code': 'VRN', 'name': 'Vrindavan'},
+            'gwalior': {'code': 'GWL', 'name': 'Gwalior Junction'},
+            'ujjain': {'code': 'UJN', 'name': 'Ujjain Junction'},
+            'ajmer': {'code': 'AII', 'name': 'Ajmer Junction'},
+            'bikaner': {'code': 'BKN', 'name': 'Bikaner Junction'},
+            'jaisalmer': {'code': 'JSM', 'name': 'Jaisalmer'},
+            'mount abu': {'code': 'ABR', 'name': 'Abu Road'},
+            'abu road': {'code': 'ABR', 'name': 'Abu Road'}
+        }
+        
         # AI function definitions for Gemini
-        self.functions = [
+        self.tools = [
             {
-                "name": "extract_booking_info",
-                "description": "Extract and structure booking information from user conversation",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "source_city": {"type": "string", "description": "Source city/station name"},
-                        "destination_city": {"type": "string", "description": "Destination city/station name"},
-                        "travel_date": {"type": "string", "description": "Travel date or date range"},
-                        "time_preference": {"type": "string", "description": "Time preference (morning/afternoon/evening/after 8AM/etc)"},
-                        "passengers": {"type": "integer", "description": "Number of passengers"},
-                        "train_selection": {"type": "string", "description": "Selected train number or list number"},
-                        "class_preference": {"type": "string", "description": "Travel class preference"},
-                        "action_needed": {"type": "string", "description": "Next action: ask_source, ask_destination, ask_date, ask_time, ask_passengers, search_trains, select_train, select_class, book_ticket"}
+                "function_declarations": [
+                    {
+                        "name": "extract_booking_info",
+                        "description": "Extract and structure booking information from user conversation",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "source_city": {"type": "string", "description": "Source city/station name"},
+                                "destination_city": {"type": "string", "description": "Destination city/station name"},
+                                "travel_date": {"type": "string", "description": "Travel date or date range"},
+                                "time_preference": {"type": "string", "description": "Time preference (morning/afternoon/evening/after 8AM/etc)"},
+                                "passengers": {"type": "integer", "description": "Number of passengers"},
+                                "train_selection": {"type": "string", "description": "Selected train number or list number"},
+                                "class_preference": {"type": "string", "description": "Travel class preference"},
+                                "action_needed": {"type": "string", "description": "Next action: ask_source, ask_destination, ask_date, ask_time, ask_passengers, search_trains, select_train, select_class, book_ticket"}
+                            }
+                        }
+                    },
+                    {
+                        "name": "search_stations",
+                        "description": "Search for railway stations by city/station name",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "City or station name to search"}
+                            },
+                            "required": ["query"]
+                        }
+                    },
+                    {
+                        "name": "search_trains",
+                        "description": "Search trains between two stations",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "from_station": {"type": "string", "description": "Source station code"},
+                                "to_station": {"type": "string", "description": "Destination station code"},
+                                "time_filter": {"type": "string", "description": "Time filter based on user preference"}
+                            },
+                            "required": ["from_station", "to_station"]
+                        }
                     }
-                }
-            },
-            {
-                "name": "search_stations",
-                "description": "Search for railway stations by city/station name",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "City or station name to search"}
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "search_trains",
-                "description": "Search trains between two stations",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "from_station": {"type": "string", "description": "Source station code"},
-                        "to_station": {"type": "string", "description": "Destination station code"},
-                        "time_filter": {"type": "string", "description": "Time filter based on user preference"}
-                    },
-                    "required": ["from_station", "to_station"]
-                }
+                ]
             }
         ]
         
@@ -86,80 +154,162 @@ Guidelines:
 """
 
     def process_message(self, user_message: str, session_id: str) -> Dict:
-        """Process user message using AI function calling"""
+        """Process user message with simplified AI logic"""
         try:
             # Initialize session
             if session_id not in self.sessions:
                 self.sessions[session_id] = {
                     'conversation': [],
                     'booking_data': {},
-                    'step': 'greeting'
+                    'step': 'greeting',
+                    'available_trains': [],
+                    'current_step': 'gathering_info',
+                    'pending_station_selection': []
                 }
             
             session = self.sessions[session_id]
             session['conversation'].append(f"User: {user_message}")
             
-            # Create conversation context
-            conversation_context = "\n".join(session['conversation'][-10:])
-            current_data = session['booking_data']
+            # Extract information from user message
+            extracted_info = self._extract_simple_info(user_message)
             
-            # Prepare prompt for AI with function calling
-            prompt = f"""{self.system_prompt}
-
-CONVERSATION HISTORY:
-{conversation_context}
-
-CURRENT BOOKING DATA:
-{json.dumps(current_data, indent=2)}
-
-USER'S LATEST MESSAGE: "{user_message}"
-
-Analyze the conversation and decide what to do next. If you need to:
-1. Extract booking info from the message - call extract_booking_info
-2. Search for stations - call search_stations  
-3. Search for trains - call search_trains
-4. Just respond conversationally - respond directly
-
-Be natural and helpful in your response."""
-
-            # Generate response with function calling
-            response = self.model.generate_content(
-                prompt,
-                tools=[{"function_declarations": self.functions}]
-            )
+            # Update booking data
+            session['booking_data'].update(extracted_info)
             
-            # Process function calls if any
-            if response.candidates[0].content.parts:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, 'function_call') and part.function_call:
-                        function_result = self._handle_function_call(part.function_call, session_id)
-                        if function_result:
-                            return function_result
+            # Determine response based on current state
+            response = self._generate_appropriate_response(user_message, session_id)
             
-            # If no function calls, return the AI's text response
-            ai_message = response.text if response.text else "I'd be happy to help you book a train ticket! Where would you like to travel from?"
-            session['conversation'].append(f"Assistant: {ai_message}")
-            
-            return {
-                'message': ai_message,
-                'actions': []
-            }
+            session['conversation'].append(f"Assistant: {response['message']}")
+            return response
             
         except Exception as e:
+            print(f"Error in process_message: {e}")
+            import traceback
+            traceback.print_exc()
             return {
-                'message': f"I'm having some technical difficulties. Could you please try again? (Error: {str(e)})",
+                'message': "I'm having some technical difficulties. Could you please try again?",
                 'actions': []
             }
+
+    def _extract_simple_info(self, user_message: str) -> Dict:
+        """Simple extraction of booking information"""
+        extracted = {}
+        msg_lower = user_message.lower()
+        
+        # Check for cities mentioned
+        for city, station in self.station_map.items():
+            if city in msg_lower:
+                # Determine if source or destination based on context
+                if 'from' in msg_lower and city in msg_lower[msg_lower.find('from'):]:
+                    extracted['source_city'] = city
+                elif 'to' in msg_lower and city in msg_lower[msg_lower.find('to'):]:
+                    extracted['destination_city'] = city
+                elif not extracted.get('source_city'):
+                    extracted['source_city'] = city
+                else:
+                    extracted['destination_city'] = city
+        
+        # Check for passenger count
+        import re
+        numbers = re.findall(r'\b(\d+)\s*(?:passenger|person|people|pax)', msg_lower)
+        if numbers:
+            extracted['passengers'] = int(numbers[0])
+        
+        # Check for dates
+        date_keywords = ['today', 'tomorrow', 'next week', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+        for keyword in date_keywords:
+            if keyword in msg_lower:
+                extracted['travel_date'] = keyword
+                break
+        
+        # Check for time preferences
+        time_keywords = {
+            'morning': 'morning',
+            'afternoon': 'afternoon', 
+            'evening': 'evening',
+            'night': 'night'
+        }
+        for keyword, preference in time_keywords.items():
+            if keyword in msg_lower:
+                extracted['time_preference'] = preference
+                break
+                
+        return extracted
+
+    def _generate_appropriate_response(self, user_message: str, session_id: str) -> Dict:
+        """Generate appropriate response based on current booking state"""
+        session = self.sessions[session_id]
+        booking_data = session['booking_data']
+        
+        # Check what information we're missing
+        if not booking_data.get('source_city'):
+            return {
+                'message': "I'd be happy to help you book a train ticket! Which city are you traveling from?",
+                'actions': []
+            }
+        
+        if not booking_data.get('destination_city'):
+            source = booking_data['source_city'].title()
+            return {
+                'message': f"Great! You're traveling from {source}. Where would you like to go?",
+                'actions': []
+            }
+        
+        if not booking_data.get('travel_date'):
+            source = booking_data['source_city'].title()
+            dest = booking_data['destination_city'].title()
+            return {
+                'message': f"Perfect! From {source} to {dest}. What date would you like to travel?",
+                'actions': []
+            }
+        
+        if not booking_data.get('passengers'):
+            return {
+                'message': "How many passengers will be traveling?",
+                'actions': []
+            }
+        
+        if not booking_data.get('time_preference'):
+            return {
+                'message': "What time of day would you prefer to travel? (morning, afternoon, evening, or night)",
+                'actions': []
+            }
+        
+        # If we have all basic info, search for trains
+        if (booking_data.get('source_city') and 
+            booking_data.get('destination_city') and 
+            booking_data.get('travel_date') and
+            booking_data.get('passengers') and
+            booking_data.get('time_preference') and
+            not session.get('available_trains')):
+            
+            return self._search_and_show_trains(session_id)
+        
+        # Handle train selection
+        if session.get('available_trains') and session.get('current_step') == 'train_selection':
+            return self._handle_train_selection(user_message, session_id)
+        
+        # Default response
+        return {
+            'message': "I understand. Could you please provide any missing information for your train booking?",
+            'actions': []
+        }
     
     def _handle_function_call(self, function_call, session_id: str) -> Optional[Dict]:
         """Handle AI function calls"""
         session = self.sessions[session_id]
-        function_name = function_call.name
         
         try:
+            function_name = function_call.name
+            args = {}
+            
+            # Extract arguments safely
+            if hasattr(function_call, 'args') and function_call.args:
+                for key, value in function_call.args.items():
+                    args[key] = value
+            
             if function_name == "extract_booking_info":
                 # Extract and update booking information
-                args = function_call.args
                 for key, value in args.items():
                     if value and key != "action_needed":
                         session['booking_data'][key] = value
@@ -169,34 +319,58 @@ Be natural and helpful in your response."""
                 return self._handle_booking_action(action, session_id)
                 
             elif function_name == "search_stations":
-                query = function_call.args.get("query", "")
+                query = args.get("query", "")
                 return self._search_and_respond_stations(query, session_id)
                 
             elif function_name == "search_trains":
-                from_station = function_call.args.get("from_station", "")
-                to_station = function_call.args.get("to_station", "")
-                time_filter = function_call.args.get("time_filter", "")
+                from_station = args.get("from_station", "")
+                to_station = args.get("to_station", "")
+                time_filter = args.get("time_filter", "")
                 return self._search_and_respond_trains(from_station, to_station, time_filter, session_id)
                 
         except Exception as e:
+            print(f"Function call error: {e}")
             return {
-                'message': f"Sorry, I had trouble processing that. Could you please rephrase? ({str(e)})",
+                'message': f"Sorry, I had trouble processing that. Could you please rephrase?",
                 'actions': []
             }
         
         return None
     
     def _search_and_respond_stations(self, query: str, session_id: str) -> Dict:
-        """Search stations and provide response"""
-        result = self.railradar.search_stations(query)
+        """Search stations using hardcoded mapping"""
         session = self.sessions[session_id]
+        query_lower = query.lower().strip()
         
-        if result.get('success') and result.get('data'):
-            stations = result['data'][:5]  # Limit to 5 results
+        # Direct match in station map
+        if query_lower in self.station_map:
+            station = self.station_map[query_lower]
+            station_code = station['code']
+            station_name = station['name']
             
-            if len(stations) == 1:
-                # Single station found - use it
-                station = stations[0]
+            # Determine if this is source or destination
+            if not session['booking_data'].get('source_station_code'):
+                session['booking_data']['source_station_code'] = station_code
+                session['booking_data']['source_city'] = station_name
+                message = f"Great! I found {station_name} ({station_code}). Where would you like to travel to?"
+            else:
+                session['booking_data']['destination_station_code'] = station_code
+                session['booking_data']['destination_city'] = station_name
+                message = f"Perfect! {station_name} ({station_code}) it is. What date would you like to travel?"
+            
+            session['conversation'].append(f"Assistant: {message}")
+            return {'message': message, 'actions': []}
+        
+        # Partial match in station map
+        matches = []
+        for city, station in self.station_map.items():
+            if query_lower in city or city in query_lower:
+                matches.append(station)
+        
+        if matches:
+            if len(matches) == 1:
+                # Single match found
+                station = matches[0]
                 station_code = station['code']
                 station_name = station['name']
                 
@@ -214,19 +388,26 @@ Be natural and helpful in your response."""
                 return {'message': message, 'actions': []}
             
             else:
-                # Multiple stations - let user choose
-                message = f"I found several stations for '{query}':\n\n"
-                for i, station in enumerate(stations, 1):
+                # Multiple matches - let user choose
+                message = f"I found several stations matching '{query}':\n\n"
+                for i, station in enumerate(matches[:5], 1):  # Limit to 5 matches
                     message += f"{i}. {station['name']} ({station['code']})\n"
                 message += "\nWhich one would you like to use? Just tell me the number or station name."
                 
                 # Store options for later selection
-                session['pending_station_selection'] = stations
+                session['pending_station_selection'] = matches[:5]
                 session['conversation'].append(f"Assistant: {message}")
                 return {'message': message, 'actions': []}
         
         else:
-            message = f"I couldn't find any stations for '{query}'. Could you try with a different spelling or a nearby city?"
+            # No matches found - suggest alternatives
+            available_cities = list(set([station['name'] for station in self.station_map.values()]))
+            message = f"I couldn't find any stations for '{query}'. Here are some popular destinations I support:\n\n"
+            message += "🏙️ **Major Cities:** Delhi, Mumbai, Bangalore, Chennai, Kolkata, Hyderabad\n"
+            message += "🏛️ **Tourist Places:** Jaipur, Agra, Goa, Udaipur, Jodhpur, Shimla\n"
+            message += "🙏 **Pilgrimage:** Varanasi, Haridwar, Rishikesh, Ujjain, Ajmer\n\n"
+            message += "Could you try with one of these cities or check the spelling?"
+            
             session['conversation'].append(f"Assistant: {message}")
             return {'message': message, 'actions': []}
     
@@ -429,11 +610,17 @@ Respond naturally and conversationally. Don't be robotic."""
     def _extract_booking_info_ai(self, user_message: str, session_id: str) -> Dict:
         """Use AI to extract booking information from user message"""
         
+        # Get available cities for better extraction
+        available_cities = list(self.station_map.keys())
+        cities_text = ", ".join(available_cities[:20])  # Show first 20 for context
+        
         extract_prompt = f"""Extract booking information from this message: "{user_message}"
 
+Available cities I support: {cities_text}, and more...
+
 Return a JSON object with any of these fields you can identify:
-- source_city: departure city/station name
-- destination_city: arrival city/station name  
+- source_city: departure city/station name (use exact city name from available cities)
+- destination_city: arrival city/station name (use exact city name from available cities)  
 - travel_date: travel date or date description
 - time_preference: preferred departure time or time of day
 - passengers: number of passengers
@@ -442,18 +629,29 @@ Return a JSON object with any of these fields you can identify:
 - budget_preference: price range or budget
 
 Only include fields that are clearly mentioned. If nothing is clear, return empty object.
+For cities, try to match with the available cities list.
 
 Examples:
-"I want to go from Delhi to Mumbai tomorrow morning" -> {{"source_city": "Delhi", "destination_city": "Mumbai", "travel_date": "tomorrow", "time_preference": "morning"}}
+"I want to go from Delhi to Mumbai tomorrow morning" -> {{"source_city": "delhi", "destination_city": "mumbai", "travel_date": "tomorrow", "time_preference": "morning"}}
 "2 passengers in 3AC" -> {{"passengers": 2, "class_preference": "3AC"}}
 "Train number 2" -> {{"train_selection": "2"}}
+"I will depart from Delhi" -> {{"source_city": "delhi"}}
+"Going to Bangalore" -> {{"destination_city": "bangalore"}}
 
 Message: "{user_message}"
 JSON:"""
 
         try:
             response = self.model.generate_content(extract_prompt)
-            result = response.text.strip()
+            
+            # Safely extract text from response
+            result = ""
+            if response.candidates and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        result += part.text
+            
+            result = result.strip()
             
             # Clean the response to extract JSON
             if '```json' in result:
@@ -461,11 +659,43 @@ JSON:"""
             elif '```' in result:
                 result = result.split('```')[1].strip()
             
-            return json.loads(result) if result.strip() != '{}' else {}
+            extracted = json.loads(result) if result.strip() != '{}' else {}
+            
+            # Validate and normalize city names
+            if 'source_city' in extracted:
+                normalized = self._normalize_city_name(extracted['source_city'])
+                if normalized:
+                    extracted['source_city'] = normalized
+                else:
+                    del extracted['source_city']
+            
+            if 'destination_city' in extracted:
+                normalized = self._normalize_city_name(extracted['destination_city'])
+                if normalized:
+                    extracted['destination_city'] = normalized
+                else:
+                    del extracted['destination_city']
+            
+            return extracted
             
         except Exception as e:
             print(f"Error extracting info: {e}")
             return {}
+    
+    def _normalize_city_name(self, city_name: str) -> Optional[str]:
+        """Normalize city name to match station map keys"""
+        city_lower = city_name.lower().strip()
+        
+        # Direct match
+        if city_lower in self.station_map:
+            return city_lower
+        
+        # Partial match
+        for city in self.station_map.keys():
+            if city_lower in city or city in city_lower:
+                return city
+        
+        return None
 
     def _determine_next_action(self, user_message: str, session_id: str) -> Dict:
         """Determine what action to take next based on conversation state"""
@@ -533,7 +763,15 @@ Keep it friendly and conversational, not robotic."""
 
         try:
             response = self.model.generate_content(conversation_prompt)
-            message = response.text.strip()
+            
+            # Safely extract text from response
+            message = ""
+            if response.candidates and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        message += part.text
+            
+            message = message.strip()
             
             return {
                 'message': message,
@@ -559,22 +797,31 @@ Keep it friendly and conversational, not robotic."""
         booking_data = session['booking_data']
         
         try:
-            # Convert city names to station codes
-            source_code = self._get_station_code(booking_data['source_city'])
-            dest_code = self._get_station_code(booking_data['destination_city'])
+            # Convert city names to station codes using hardcoded mapping
+            source_city = booking_data['source_city'].lower().strip()
+            dest_city = booking_data['destination_city'].lower().strip()
             
-            if not source_code or not dest_code:
+            source_station = self.station_map.get(source_city)
+            dest_station = self.station_map.get(dest_city)
+            
+            if not source_station:
                 return {
-                    'message': "I'm having trouble finding the station codes. Could you please specify the exact station names?",
+                    'message': f"I couldn't find station information for '{booking_data['source_city']}'. Could you please specify a different city?",
+                    'actions': []
+                }
+            
+            if not dest_station:
+                return {
+                    'message': f"I couldn't find station information for '{booking_data['destination_city']}'. Could you please specify a different city?",
                     'actions': []
                 }
             
             # Search for trains using RailRadar API
-            result = self.railradar.get_trains_between_stations(source_code, dest_code)
+            result = self.railradar.get_trains_between_stations(source_station['code'], dest_station['code'])
             
             if not result.get('success') or not result.get('data'):
                 return {
-                    'message': f"I couldn't find any trains between {booking_data['source_city']} and {booking_data['destination_city']}. Could you check the station names?",
+                    'message': f"I couldn't find any trains between {source_station['name']} and {dest_station['name']}.",
                     'actions': []
                 }
             
@@ -591,6 +838,12 @@ Keep it friendly and conversational, not robotic."""
             # Store trains and update session
             session['available_trains'] = filtered_trains
             session['current_step'] = 'train_selection'
+            
+            # Update booking data with station info
+            booking_data['source_station_code'] = source_station['code']
+            booking_data['destination_station_code'] = dest_station['code']
+            booking_data['source_city'] = source_station['name']
+            booking_data['destination_city'] = dest_station['name']
             
             # Create response message
             message = self._format_train_options(filtered_trains, booking_data)
@@ -732,25 +985,44 @@ I'll now proceed to IRCTC website to complete your booking. Please wait while I 
         }
 
     def _get_station_code(self, city_name: str) -> Optional[str]:
-        """Get station code for city name"""
-        # This would typically call an API or database
-        # For now, using a basic mapping
-        station_map = {
-            'delhi': 'NDLS', 'new delhi': 'NDLS',
-            'mumbai': 'CSTM', 'bombay': 'CSTM',
-            'bangalore': 'SBC', 'bengaluru': 'SBC',
-            'chennai': 'MAS', 'madras': 'MAS',
-            'kolkata': 'HWH', 'calcutta': 'HWH',
-            'hyderabad': 'SC',
-            'pune': 'PUNE',
-            'ahmedabad': 'ADI',
-            'jaipur': 'JP',
-            'chandigarh': 'CDG',
-            'lucknow': 'LJN',
-            'agra': 'AGC'
-        }
+        """Get station code for city name using hardcoded mapping"""
+        city_lower = city_name.lower().strip()
         
-        return station_map.get(city_name.lower())
+        # Direct match
+        if city_lower in self.station_map:
+            return self.station_map[city_lower]['code']
+        
+        # Partial match
+        for city, station in self.station_map.items():
+            if city_lower in city or city in city_lower:
+                return station['code']
+        
+        return None
+
+    def _looks_like_train_selection(self, user_message: str) -> bool:
+        """Check if user message looks like train selection"""
+        msg_lower = user_message.lower()
+        # Check for numbers or train-related keywords
+        import re
+        numbers = re.findall(r'\b(\d+)\b', user_message)
+        keywords = ['train', 'number', 'select', 'choose', 'pick', 'option']
+        return bool(numbers) or any(keyword in msg_lower for keyword in keywords)
+
+    def _filter_trains_by_preference(self, trains: List[Dict], time_preference: Optional[str]) -> List[Dict]:
+        """Filter trains by time preference"""
+        if not time_preference:
+            return trains
+        return self._filter_trains_by_time(trains, time_preference)
+
+    def _calculate_duration(self, train: Dict) -> str:
+        """Calculate train journey duration"""
+        return self._calculate_journey_time(train)
+
+    def _get_available_classes(self, train: Dict) -> List[str]:
+        """Get available classes for a train (simplified implementation)"""
+        # In real implementation, this would come from the train data
+        # For now, return common Indian railway classes
+        return ['1A', '2A', '3A', 'SL', 'CC', '2S']
 
     def get_session_data(self, session_id: str) -> Dict:
         """Get current session data"""
