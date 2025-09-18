@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, jsonify, session
 import os
 from dotenv import load_dotenv
-from services.ai_agent import TrainBookingAgent
+from services.ai_agent_simple import TrainBookingAgent
 from services.railradar_api import RailRadarAPI
 from services.irctc_automation import IRCTCAutomation
 import uuid

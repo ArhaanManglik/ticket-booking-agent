@@ -1,773 +1,762 @@
 import os
 import google.generativeai as genai
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 import json
 import re
 from services.railradar_api import RailRadarAPI
 
 class TrainBookingAgent:
-    """AI Agent for train booking assistance using Gemini"""
+    """AI-First Train Booking Assistant using Gemini and RailRadar API"""
     
     def __init__(self):
         # Configure Gemini
         genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-        self.model = genai.GenerativeModel('gemini-2.5-flash-exp')
+        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
         # Initialize RailRadar API
         self.railradar = RailRadarAPI()
         
-        # Conversation memory (in production, use a database)
-        self.conversations = {}
-        self.user_preferences = {}  # Store user selections
+        # Session storage (use database in production)
+        self.sessions = {}
         
-        # System prompt for the AI agent
-        self.system_prompt = """You are a friendly and conversational Indian Railway train booking assistant. Your personality should be:
+        # AI function definitions for Gemini
+        self.functions = [
+            {
+                "name": "extract_booking_info",
+                "description": "Extract and structure booking information from user conversation",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source_city": {"type": "string", "description": "Source city/station name"},
+                        "destination_city": {"type": "string", "description": "Destination city/station name"},
+                        "travel_date": {"type": "string", "description": "Travel date or date range"},
+                        "time_preference": {"type": "string", "description": "Time preference (morning/afternoon/evening/after 8AM/etc)"},
+                        "passengers": {"type": "integer", "description": "Number of passengers"},
+                        "train_selection": {"type": "string", "description": "Selected train number or list number"},
+                        "class_preference": {"type": "string", "description": "Travel class preference"},
+                        "action_needed": {"type": "string", "description": "Next action: ask_source, ask_destination, ask_date, ask_time, ask_passengers, search_trains, select_train, select_class, book_ticket"}
+                    }
+                }
+            },
+            {
+                "name": "search_stations",
+                "description": "Search for railway stations by city/station name",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "City or station name to search"}
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "search_trains",
+                "description": "Search trains between two stations",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "from_station": {"type": "string", "description": "Source station code"},
+                        "to_station": {"type": "string", "description": "Destination station code"},
+                        "time_filter": {"type": "string", "description": "Time filter based on user preference"}
+                    },
+                    "required": ["from_station", "to_station"]
+                }
+            }
+        ]
+        
+        # System prompt for the AI
+        self.system_prompt = """You are RailBot, a friendly Indian Railway booking assistant.
 
-- Warm and helpful, like talking to a travel-savvy friend
-- Use casual, natural language instead of formal robot-speak
-- Show enthusiasm about helping with travel plans
-- Ask follow-up questions when appropriate
-- Use emojis sparingly but effectively
-- Be patient and understanding
+Your role:
+- Help users book train tickets through natural conversation
+- Use function calls to search stations and trains
+- Extract booking information intelligently from user messages
+- Be conversational, helpful, and patient
 
-Your role is to collect booking information step by step:
-- Source city/station
-- Destination city/station  
-- Travel date or date range (be flexible with dates)
-- Time preference (specific times like "after 8AM" or general like "morning")
-- Number of passengers
-- Train selection from available options
-- Class preference based on what's actually available
+Available functions:
+- extract_booking_info: Parse user input for booking details
+- search_stations: Find station codes from city names
+- search_trains: Get available trains between stations
 
 Guidelines:
-- When someone asks about destinations, suggest popular routes
-- When they mention date ranges, be accommodating
-- For time preferences, understand "after 8AM", "before 6PM", etc.
-- Be conversational in responses, not just informative
-- If they seem unsure, offer helpful suggestions
+- Ask clarifying questions when needed
+- Provide helpful suggestions
+- Confirm details before booking
+- Keep responses natural and concise
+"""
 
-Station codes you know:
-- Delhi/New Delhi -> NDLS
-- Mumbai/Bombay -> CSTM  
-- Bangalore/Bengaluru -> SBC
-- Chennai/Madras -> MAS
-- Kolkata/Calcutta -> HWH
-- Hyderabad -> SC
-- Pune -> PUNE
-- Jaipur -> JP
-- Jodhpur -> JU
-- Udaipur -> UDZ
-- Agra -> AGC
-- Lucknow -> LJN
-- Varanasi -> BSB
-- Ahmedabad -> ADI
-- Surat -> ST
-- Indore -> INDB
-- Bhopal -> BPL
-- And many more major Indian cities
-
-Keep responses natural and conversational. Don't use technical formatting or repeated information."""
-    
     def process_message(self, user_message: str, session_id: str) -> Dict:
-        """Process user message and return AI response"""
+        """Process user message using AI function calling"""
         try:
-            # Initialize conversation if new session
-            if session_id not in self.conversations:
-                self.conversations[session_id] = []
-                self.user_preferences[session_id] = {}
+            # Initialize session
+            if session_id not in self.sessions:
+                self.sessions[session_id] = {
+                    'conversation': [],
+                    'booking_data': {},
+                    'step': 'greeting'
+                }
             
-            # Add user message to conversation
-            self.conversations[session_id].append(f"User: {user_message}")
+            session = self.sessions[session_id]
+            session['conversation'].append(f"User: {user_message}")
             
-            # Update user preferences with information from current message
-            self._extract_booking_info(user_message, session_id)
+            # Create conversation context
+            conversation_context = "\n".join(session['conversation'][-10:])
+            current_data = session['booking_data']
             
-            # Check current booking status
-            booking_status = self._get_booking_status(session_id)
-            
-            # Check if we should search for trains (when all prerequisites are met)
-            if self._should_search_trains(user_message, session_id):
-                return self._search_trains_and_respond(user_message, session_id)
-            
-            # Handle train selection - check if trains are shown and no train selected yet
-            if (self.user_preferences[session_id].get('trains_shown') and 
-                not self.user_preferences[session_id].get('selected_train') and 
-                self._looks_like_train_selection(user_message)):
-                return self._handle_train_selection(user_message, session_id)
-            
-            # If we have all info, proceed to booking
-            if booking_status['complete']:
-                return self._proceed_to_booking(session_id)
-            
-            # For all other cases, use AI to generate responses
-            return self._generate_ai_response(user_message, session_id)
-            
-        except Exception as e:
-            return {
-                'message': f"I'm sorry, I encountered an error: {str(e)}. Please try again.",
-                'actions': []
-            }
-    
-    def _generate_ai_response(self, user_message: str, session_id: str) -> Dict:
-        """Generate AI response for any user message"""
-        try:
-            conversation_context = "\n".join(self.conversations[session_id][-8:])
-            prefs = self.user_preferences[session_id]
-            booking_status = self._get_booking_status(session_id)
-            
-            next_needed = booking_status['missing'][0] if booking_status['missing'] else 'none'
-            
+            # Prepare prompt for AI with function calling
             prompt = f"""{self.system_prompt}
 
-CONVERSATION CONTEXT:
+CONVERSATION HISTORY:
 {conversation_context}
 
-CURRENT BOOKING PROGRESS:
-- Collected: {booking_status['collected']}
-- Still need: {booking_status['missing']}
+CURRENT BOOKING DATA:
+{json.dumps(current_data, indent=2)}
 
 USER'S LATEST MESSAGE: "{user_message}"
 
-Instructions:
-- Respond in a friendly, conversational way
-- If the user is asking questions, answer them naturally and helpfully
-- Then smoothly guide them toward providing: {next_needed}
-- Use natural transitions, don't be abrupt
-- If they ask about destinations from Delhi, mention popular places like Chandigarh, Mumbai, Bangalore, etc.
-- If they ask about times, explain options clearly
-- Be encouraging and helpful, not robotic
+Analyze the conversation and decide what to do next. If you need to:
+1. Extract booking info from the message - call extract_booking_info
+2. Search for stations - call search_stations  
+3. Search for trains - call search_trains
+4. Just respond conversationally - respond directly
 
-Remember: You're having a conversation, not filling out a form!"""
+Be natural and helpful in your response."""
 
-            response = self.model.generate_content(prompt)
-            ai_message = response.text.strip()
+            # Generate response with function calling
+            response = self.model.generate_content(
+                prompt,
+                tools=[{"function_declarations": self.functions}]
+            )
             
-            self.conversations[session_id].append(f"Assistant: {ai_message}")
-            return {'message': ai_message, 'actions': []}
+            # Process function calls if any
+            if response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        function_result = self._handle_function_call(part.function_call, session_id)
+                        if function_result:
+                            return function_result
             
-        except Exception as e:
-            # Fallback to asking for next info if AI fails
-            return self._ask_for_next_info(session_id)
-    
-    def _extract_booking_info(self, user_message: str, session_id: str):
-        """Extract and store booking information from user message"""
-        msg_lower = user_message.lower()
-        prefs = self.user_preferences[session_id]
-        
-        # Extract station information first
-        self._extract_stations_from_message(user_message, session_id)
-        
-        # Extract date information (including ranges)
-        date_patterns = [
-            r'(\d{1,2})\s*(st|nd|rd|th)?\s*to\s*(\d{1,2})\s*(st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|september|january|february|march|april|may|june|july|august|october|november|december)',  # date ranges
-            r'(\d{1,2})\s*(st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|september|january|february|march|april|may|june|july|august|october|november|december)',  # single dates
-            r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',
-            r'(today|tomorrow|next\s+\w+)',
-            r'(any\s*date|flexible|open)'  # flexible dates
-        ]
-        
-        for pattern in date_patterns:
-            if re.search(pattern, msg_lower):
-                prefs['travel_date'] = user_message
-                break
-        
-        # Extract time preferences
-        time_keywords = {
-            'morning': ['morning', 'early', 'dawn'],
-            'afternoon': ['afternoon', 'noon', 'midday'],
-            'evening': ['evening'],
-            'night': ['night', 'late', 'overnight'],
-            'any': ['any time', 'flexible', 'open', 'no preference']
-        }
-        
-        # Check for specific time patterns like "after 8AM", "before 6PM", etc.
-        time_patterns = [
-            r'after\s*(\d{1,2})(?::(\d{2}))?\s*([ap]m)?',
-            r'before\s*(\d{1,2})(?::(\d{2}))?\s*([ap]m)?',
-            r'(\d{1,2})(?::(\d{2}))?\s*([ap]m)\s*(?:onwards|and\s*after)',
-            r'from\s*(\d{1,2})(?::(\d{2}))?\s*([ap]m)'
-        ]
-        
-        for pattern in time_patterns:
-            match = re.search(pattern, msg_lower)
-            if match:
-                prefs['time_preference'] = user_message  # Store the exact user input
-                break
-        
-        if not prefs.get('time_preference'):
-            for time_period, keywords in time_keywords.items():
-                if any(keyword in msg_lower for keyword in keywords):
-                    prefs['time_preference'] = time_period
-                    break
-        
-        # Extract number of passengers
-        passenger_patterns = [r'(\d+)\s*(passenger|people|person|traveler|traveller)', r'^(\d+)$']
-        for pattern in passenger_patterns:
-            match = re.search(pattern, msg_lower)
-            if match and 1 <= int(match.group(1)) <= 6:  # Reasonable passenger limit
-                prefs['passengers'] = int(match.group(1))
-                break
-        
-        # Note: Class extraction will be done after we get real train data with available classes
-    
-    def _get_booking_status(self, session_id: str) -> Dict:
-        """Check what booking information we have and what's missing"""
-        prefs = self.user_preferences[session_id]
-        
-        # Required fields in the comprehensive order
-        required_fields = [
-            ('from_station', prefs.get('from_station')),
-            ('to_station', prefs.get('to_station')),
-            ('travel_date', prefs.get('travel_date')),
-            ('time_preference', prefs.get('time_preference')),
-            ('passengers', prefs.get('passengers')),
-            ('selected_train', prefs.get('selected_train')),
-            ('travel_class', prefs.get('travel_class'))
-        ]
-        
-        missing = [field for field, value in required_fields if not value]
-        collected = {field: value for field, value in required_fields if value}
-        
-        return {
-            'complete': len(missing) == 0,
-            'missing': missing,
-            'collected': collected
-        }
-    
-    def _ask_for_next_info(self, session_id: str) -> Dict:
-        """Ask for the next piece of missing information using AI"""
-        booking_status = self._get_booking_status(session_id)
-        prefs = self.user_preferences[session_id]
-        
-        if not booking_status['missing']:
-            return self._proceed_to_booking(session_id)
-        
-        next_missing = booking_status['missing'][0]
-        
-        # Use AI to generate natural responses based on conversation context
-        conversation_context = "\n".join(self.conversations[session_id][-6:])
-        current_prefs = {k: v for k, v in prefs.items() if v and k != 'trains'}
-        
-        prompt = f"""{self.system_prompt}
-
-Current booking progress: {current_prefs}
-
-Recent conversation:
-{conversation_context}
-
-The next information I need to collect is: {next_missing}
-
-Please respond naturally and conversationally. If the user asks questions about available options (like cities, times, etc.), answer them helpfully. Then ask for the next required information.
-
-Guidelines for {next_missing}:
-- from_station: Ask which city/station they want to depart from
-- to_station: Ask which city/station they want to travel to. If they ask about available destinations, mention popular destinations from their source
-- travel_date: Ask for travel date or date range, be flexible
-- time_preference: Ask about preferred departure time or time of day
-- passengers: Ask how many passengers are traveling
-- selected_train: This should trigger train search automatically
-- travel_class: This should show available classes automatically
-
-Respond naturally and helpfully."""
-
-        try:
-            response = self.model.generate_content(prompt)
-            ai_message = response.text.strip()
+            # If no function calls, return the AI's text response
+            ai_message = response.text if response.text else "I'd be happy to help you book a train ticket! Where would you like to travel from?"
+            session['conversation'].append(f"Assistant: {ai_message}")
             
-            # Special handling for certain cases
-            if next_missing == 'selected_train':
-                # Trigger train search if we have prerequisites
-                if (prefs.get('from_station') and prefs.get('to_station') and 
-                    prefs.get('travel_date') and prefs.get('time_preference') and 
-                    prefs.get('passengers')):
-                    return self._search_trains_and_respond("", session_id)
-            elif next_missing == 'travel_class':
-                # Show available classes
-                return self._show_available_classes(session_id)
-            
-            self.conversations[session_id].append(f"Assistant: {ai_message}")
-            return {'message': ai_message, 'actions': []}
-            
-        except Exception as e:
-            # Fallback to basic templates if AI fails
-            fallback_messages = {
-                'from_station': "Which city or station would you like to depart from?",
-                'to_station': "Which city or station would you like to travel to?",
-                'travel_date': "What date would you like to travel?",
-                'time_preference': "What time of day would you prefer to travel?",
-                'passengers': "How many passengers will be traveling?"
+            return {
+                'message': ai_message,
+                'actions': []
             }
             
-            message = fallback_messages.get(next_missing, "I need a bit more information to proceed.")
-            self.conversations[session_id].append(f"Assistant: {message}")
-            return {'message': message, 'actions': []}
+        except Exception as e:
+            return {
+                'message': f"I'm having some technical difficulties. Could you please try again? (Error: {str(e)})",
+                'actions': []
+            }
     
-    def _show_available_classes(self, session_id: str) -> Dict:
-        """Show available classes for the selected train"""
-        prefs = self.user_preferences[session_id]
-        selected_train = prefs.get('selected_train')
+    def _handle_function_call(self, function_call, session_id: str) -> Optional[Dict]:
+        """Handle AI function calls"""
+        session = self.sessions[session_id]
+        function_name = function_call.name
         
-        if not selected_train:
-            message = "Please select a train first before choosing the class."
-            self.conversations[session_id].append(f"Assistant: {message}")
-            return {'message': message, 'actions': []}
-        
-        # Extract available classes from train data
-        available_classes = []
-        if 'classes' in selected_train:
-            available_classes = selected_train['classes']
-        else:
-            # Fallback: common classes (we'll improve this with actual API data)
-            available_classes = ['2S', 'SL', '3A', '2A', '1A', 'CC']
-        
-        class_names = {
-            '2S': 'Second Sitting (2S)',
-            'SL': 'Sleeper (SL)', 
-            '3E': 'Third AC Economy (3E)',
-            '3A': 'Third AC (3A)',
-            '2A': 'Second AC (2A)',
-            '1A': 'First AC (1A)',
-            'CC': 'Chair Car (CC)',
-            'EC': 'Executive Chair Car (EC)'
-        }
-        
-        message = f"Great! For train {selected_train['trainNumber']} - {selected_train['trainName']}, the available classes are:\n\n"
-        
-        for i, class_code in enumerate(available_classes, 1):
-            class_name = class_names.get(class_code, class_code)
-            message += f"{i}. {class_name}\n"
-        
-        message += "\nWhich class would you prefer? You can mention the class name or number."
-        
-        self.conversations[session_id].append(f"Assistant: {message}")
-        return {'message': message, 'actions': []}
-    
-    def _proceed_to_booking(self, session_id: str) -> Dict:
-        """Proceed with IRCTC booking when all info is collected"""
-        prefs = self.user_preferences[session_id]
-        
-        time_pref_display = prefs.get('time_preference', 'any time')
-        if time_pref_display == 'any':
-            time_pref_display = 'any time'
-        
-        summary = f"""Perfect! I have all the information needed for your booking:
-
-📍 **Route:** {prefs['from_station']} to {prefs['to_station']}
-📅 **Date:** {prefs['travel_date']}
-🕐 **Time Preference:** {time_pref_display}
-🚂 **Train:** {prefs['selected_train']['trainNumber']} - {prefs['selected_train']['trainName']}
-🎫 **Class:** {prefs['travel_class']}
-👥 **Passengers:** {prefs['passengers']}
-
-I'll now proceed to book your tickets on IRCTC. Please wait while I navigate to the booking page and fill in your details..."""
-
-        self.conversations[session_id].append(f"Assistant: {summary}")
-        
-        return {
-            'message': summary,
-            'actions': [{
-                'type': 'book_train',
-                'data': prefs
-            }]
-        }
-    
-    def _should_search_trains(self, user_message: str, session_id: str) -> bool:
-        """Check if we should search for trains (when all prerequisites are met)"""
-        prefs = self.user_preferences[session_id]
-        
-        # Don't search again if we already have trains
-        if 'trains_shown' in prefs:
-            return False
-            
-        # Only search if we have all the prerequisites AND the system is asking for train selection
-        booking_status = self._get_booking_status(session_id)
-        
-        # We should search trains only when 'selected_train' is the next missing field
-        # This means we have source, destination, date, time preference, and passengers
-        return (booking_status['missing'] and 
-                booking_status['missing'][0] == 'selected_train' and
-                prefs.get('from_station') and 
-                prefs.get('to_station') and 
-                prefs.get('travel_date') and
-                prefs.get('time_preference') and
-                prefs.get('passengers'))
-    
-    def _extract_stations_from_message(self, user_message: str, session_id: str):
-        """Extract station information from user message"""
-        msg_lower = user_message.lower()
-        prefs = self.user_preferences[session_id]
-        
-        # Station mapping - expanded list of Indian railway stations
-        station_map = {
-            'delhi': 'NDLS', 'new delhi': 'NDLS',
-            'chandigarh': 'CDG',
-            'mumbai': 'CSTM', 'bombay': 'CSTM',
-            'bangalore': 'SBC', 'bengaluru': 'SBC',
-            'chennai': 'MAS', 'madras': 'MAS',
-            'kolkata': 'HWH', 'calcutta': 'HWH',
-            'hyderabad': 'SC',
-            'pune': 'PUNE', 'poona': 'PUNE',
-            'ahmedabad': 'ADI',
-            'jaipur': 'JP',
-            'jodhpur': 'JU',
-            'udaipur': 'UDZ',
-            'kota': 'KOTA',
-            'agra': 'AGC',
-            'lucknow': 'LJN',
-            'kanpur': 'CNB',
-            'allahabad': 'ALD', 'prayagraj': 'ALD',
-            'varanasi': 'BSB', 'banaras': 'BSB',
-            'goa': 'MAO', 'margao': 'MAO',
-            'indore': 'INDB',
-            'bhopal': 'BPL',
-            'nagpur': 'NGP',
-            'nashik': 'NK',
-            'aurangabad': 'AWB',
-            'surat': 'ST',
-            'vadodara': 'BRC', 'baroda': 'BRC',
-            'rajkot': 'RJT',
-            'jammu': 'JAT',
-            'amritsar': 'ASR',
-            'ludhiana': 'LDH',
-            'dehradun': 'DDN',
-            'haridwar': 'HW',
-            'rishikesh': 'RKSH',
-            'shimla': 'SML',
-            'pathankot': 'PTK',
-            'guwahati': 'GHY',
-            'dibrugarh': 'DBRG',
-            'silchar': 'SCL',
-            'bhubaneswar': 'BBS',
-            'cuttack': 'CTC',
-            'puri': 'PURI',
-            'raipur': 'R',
-            'bilaspur': 'BSP',
-            'ranchi': 'RNC',
-            'jamshedpur': 'TATA',
-            'patna': 'PNBE',
-            'gaya': 'GAYA',
-            'muzaffarpur': 'MFP',
-            'darbhanga': 'DBG',
-            'kochi': 'ERS', 'cochin': 'ERS',
-            'trivandrum': 'TVC', 'thiruvananthapuram': 'TVC',
-            'kozhikode': 'CLT', 'calicut': 'CLT',
-            'thrissur': 'TCR',
-            'coimbatore': 'CBE',
-            'madurai': 'MDU',
-            'salem': 'SA',
-            'tiruchirapalli': 'TPJ', 'trichy': 'TPJ',
-            'vijayawada': 'BZA',
-            'visakhapatnam': 'VSKP', 'vizag': 'VSKP',
-            'tirupati': 'TPTY',
-            'guntur': 'GNT',
-            'warangal': 'WL',
-            'mysore': 'MYS', 'mysuru': 'MYS',
-            'mangalore': 'MAQ', 'mangaluru': 'MAQ',
-            'hubli': 'UBL', 'huballi': 'UBL',
-            'belgaum': 'BGM', 'belagavi': 'BGM'
-        }
-        
-        # Check for stations in the message
-        for station_name, code in station_map.items():
-            if station_name in msg_lower:
-                # If we don't have a source station yet, this is the source
-                if not prefs.get('from_station'):
-                    prefs['from_station'] = code
-                # If we have source but not destination, this is destination
-                elif not prefs.get('to_station') and code != prefs['from_station']:
-                    prefs['to_station'] = code
-    
-    def _search_trains_and_respond(self, user_message: str, session_id: str) -> Dict:
-        """Search for trains and return formatted response with time filtering"""
         try:
-            prefs = self.user_preferences[session_id]
-            from_code = prefs.get('from_station')
-            to_code = prefs.get('to_station')
-            time_pref = prefs.get('time_preference')
-            
-            if not from_code or not to_code:
-                return {'message': "Could you please specify both source and destination stations?", 'actions': []}
-            
-            # Search for trains
-            result = self.railradar.get_trains_between_stations(from_code, to_code)
-            
-            if result.get('success'):
-                trains = result.get('data', [])
+            if function_name == "extract_booking_info":
+                # Extract and update booking information
+                args = function_call.args
+                for key, value in args.items():
+                    if value and key != "action_needed":
+                        session['booking_data'][key] = value
                 
-                # Filter trains based on time preference if specified
-                if time_pref and time_pref != 'any':
-                    trains = self._filter_trains_by_time(trains, time_pref)
+                # Generate appropriate response based on action needed
+                action = args.get("action_needed", "continue")
+                return self._handle_booking_action(action, session_id)
                 
-                trains = trains[:5]  # Limit to 5 trains
+            elif function_name == "search_stations":
+                query = function_call.args.get("query", "")
+                return self._search_and_respond_stations(query, session_id)
                 
-                if trains:
-                    # Store trains and mark as shown
-                    prefs['trains'] = trains
-                    prefs['trains_shown'] = True
-                    
-                    # Create a conversational response
-                    travel_date = prefs.get('travel_date', 'your selected date')
-                    
-                    # Determine filter description
-                    filter_desc = ""
-                    if time_pref and time_pref != 'any':
-                        if 'after' in time_pref.lower():
-                            filter_desc = f" that depart {time_pref}"
-                        elif 'before' in time_pref.lower():
-                            filter_desc = f" that depart {time_pref}"
-                        else:
-                            filter_desc = f" with {time_pref} departures"
-                    
-                    response_msg = f"Great! I found {len(trains)} trains from {from_code} to {to_code} for {travel_date}{filter_desc}:\n\n"
-                    
-                    for i, train in enumerate(trains, 1):
-                        dept_time = self._format_time(train['fromStationSchedule']['departureMinutes'])
-                        arr_time = self._format_time(train['toStationSchedule']['arrivalMinutes'])
-                        journey_time = self._calculate_journey_time(train)
-                        
-                        response_msg += f"**{i}. {train['trainNumber']} - {train['trainName']}**\n"
-                        response_msg += f"   � Departure: {dept_time} → Arrival: {arr_time}\n"
-                        response_msg += f"   ⏱️ Journey: {journey_time}\n\n"
-                    
-                    response_msg += "Which train catches your eye? Just tell me the number (like 1 or 2) or the train number!"
-                    
-                    # Add to conversation
-                    self.conversations[session_id].append(f"Assistant: {response_msg}")
-                    
-                    return {
-                        'message': response_msg,
-                        'actions': []
-                    }
+            elif function_name == "search_trains":
+                from_station = function_call.args.get("from_station", "")
+                to_station = function_call.args.get("to_station", "")
+                time_filter = function_call.args.get("time_filter", "")
+                return self._search_and_respond_trains(from_station, to_station, time_filter, session_id)
+                
+        except Exception as e:
+            return {
+                'message': f"Sorry, I had trouble processing that. Could you please rephrase? ({str(e)})",
+                'actions': []
+            }
+        
+        return None
+    
+    def _search_and_respond_stations(self, query: str, session_id: str) -> Dict:
+        """Search stations and provide response"""
+        result = self.railradar.search_stations(query)
+        session = self.sessions[session_id]
+        
+        if result.get('success') and result.get('data'):
+            stations = result['data'][:5]  # Limit to 5 results
+            
+            if len(stations) == 1:
+                # Single station found - use it
+                station = stations[0]
+                station_code = station['code']
+                station_name = station['name']
+                
+                # Determine if this is source or destination
+                if not session['booking_data'].get('source_station_code'):
+                    session['booking_data']['source_station_code'] = station_code
+                    session['booking_data']['source_city'] = station_name
+                    message = f"Great! I found {station_name} ({station_code}). Where would you like to travel to?"
                 else:
-                    msg = f"Sorry, no trains found between {from_code} and {to_code} for your time preference. Would you like to see trains for other times of the day?"
-                    self.conversations[session_id].append(f"Assistant: {msg}")
-                    return {'message': msg, 'actions': []}
-            else:
-                msg = "Sorry, I'm having trouble accessing train information right now. Please try again."
-                self.conversations[session_id].append(f"Assistant: {msg}")
-                return {'message': msg, 'actions': []}
+                    session['booking_data']['destination_station_code'] = station_code
+                    session['booking_data']['destination_city'] = station_name
+                    message = f"Perfect! {station_name} ({station_code}) it is. What date would you like to travel?"
                 
-        except Exception as e:
-            msg = f"Sorry, I encountered an error while searching for trains: {str(e)}"
-            self.conversations[session_id].append(f"Assistant: {msg}")
-            return {'message': msg, 'actions': []}
-    
-    def _looks_like_train_selection(self, user_message: str) -> bool:
-        """Check if user message looks like a train selection"""
-        msg_lower = user_message.lower().strip()
-        
-        # Check for simple number selections (1, 2, 3, etc.)
-        if re.match(r'^\d+$', msg_lower) and 1 <= int(msg_lower) <= 10:
-            return True
-        
-        # Check for train numbers (5 digits)
-        if re.search(r'\d{5}', user_message):
-            return True
-        
-        # Check for train names/keywords
-        if any(keyword in msg_lower for keyword in ['train', 'shatabdi', 'express', 'sampark', 'kranti']):
-            return True
-        
-        return False
-    
-    def _is_train_selection(self, user_message: str) -> bool:
-        """Legacy method - use _looks_like_train_selection instead"""
-        return self._looks_like_train_selection(user_message)
-    
-    def _handle_train_selection(self, user_message: str, session_id: str) -> Dict:
-        """Handle train selection and store it in preferences"""
-        try:
-            prefs = self.user_preferences[session_id]
+                session['conversation'].append(f"Assistant: {message}")
+                return {'message': message, 'actions': []}
             
-            # Check if it's a class selection instead of train selection
-            if prefs.get('selected_train') and not prefs.get('travel_class'):
-                return self._handle_class_selection(user_message, session_id)
-            
-            # Extract train number or list number from message
-            trains = prefs.get('trains', [])
-            selected_train = None
-            
-            # Try to match by list number (1, 2, 3, etc.)
-            list_numbers = re.findall(r'\b([1-5])\b', user_message)
-            if list_numbers:
-                try:
-                    list_num = int(list_numbers[0]) - 1  # Convert to 0-based index
-                    if 0 <= list_num < len(trains):
-                        selected_train = trains[list_num]
-                except:
-                    pass
-            
-            # Try to match by train number (5 digits)
-            if not selected_train:
-                train_numbers = re.findall(r'\d{5}', user_message)
-                if train_numbers:
-                    train_num = train_numbers[0]
-                    for train in trains:
-                        if train['trainNumber'] == train_num:
-                            selected_train = train
-                            break
-            
-            # Try to match by train name
-            if not selected_train:
-                msg_lower = user_message.lower()
-                for train in trains:
-                    if any(word in train['trainName'].lower() for word in msg_lower.split() if len(word) > 3):
-                        selected_train = train
-                        break
-            
-            if selected_train:
-                prefs['selected_train'] = selected_train
-                # Continue to next step (class selection)
-                return self._ask_for_next_info(session_id)
             else:
-                response = "I couldn't find that train. Please provide the train number (like 12045) or select by number (1, 2, 3, etc.) from the list above."
-                self.conversations[session_id].append(f"Assistant: {response}")
-                return {'message': response, 'actions': []}
+                # Multiple stations - let user choose
+                message = f"I found several stations for '{query}':\n\n"
+                for i, station in enumerate(stations, 1):
+                    message += f"{i}. {station['name']} ({station['code']})\n"
+                message += "\nWhich one would you like to use? Just tell me the number or station name."
                 
-        except Exception as e:
-            msg = f"Sorry, there was an error processing your selection: {str(e)}"
-            self.conversations[session_id].append(f"Assistant: {msg}")
-            return {'message': msg, 'actions': []}
+                # Store options for later selection
+                session['pending_station_selection'] = stations
+                session['conversation'].append(f"Assistant: {message}")
+                return {'message': message, 'actions': []}
+        
+        else:
+            message = f"I couldn't find any stations for '{query}'. Could you try with a different spelling or a nearby city?"
+            session['conversation'].append(f"Assistant: {message}")
+            return {'message': message, 'actions': []}
     
-    def _handle_class_selection(self, user_message: str, session_id: str) -> Dict:
-        """Handle class selection from available classes"""
-        try:
-            prefs = self.user_preferences[session_id]
-            msg_lower = user_message.lower()
-            
-            # Common class mappings
-            class_mappings = {
-                '2s': '2S', 'second sitting': '2S', 'general': '2S',
-                'sl': 'SL', 'sleeper': 'SL', 
-                '3a': '3A', 'third ac': '3A', '3rd ac': '3A',
-                '2a': '2A', 'second ac': '2A', '2nd ac': '2A',
-                '1a': '1A', 'first ac': '1A', '1st ac': '1A',
-                'cc': 'CC', 'chair car': 'CC', 'chair': 'CC',
-                'ec': 'EC', 'executive': 'EC', 'executive chair': 'EC'
+    def _handle_booking_action(self, action: str, session_id: str) -> Dict:
+        """Handle different booking actions"""
+        session = self.sessions[session_id]
+        data = session['booking_data']
+        
+        if action == "search_trains":
+            if data.get('source_station_code') and data.get('destination_station_code'):
+                time_filter = data.get('time_preference', '')
+                return self._search_and_respond_trains(
+                    data['source_station_code'], 
+                    data['destination_station_code'], 
+                    time_filter, 
+                    session_id
+                )
+        
+        elif action == "book_ticket":
+            # Final booking summary
+            summary = self._generate_booking_summary(session_id)
+            session['conversation'].append(f"Assistant: {summary}")
+            return {
+                'message': summary,
+                'actions': [{'type': 'book_train', 'data': data}]
             }
+        
+        # For other actions, let AI handle the conversation naturally
+        return None
+    
+    def _generate_booking_summary(self, session_id: str) -> str:
+        """Generate final booking summary"""
+        data = self.sessions[session_id]['booking_data']
+        
+        summary = "Perfect! Here's your booking summary:\n\n"
+        summary += f"🚂 **Route:** {data.get('source_city', 'N/A')} → {data.get('destination_city', 'N/A')}\n"
+        summary += f"📅 **Date:** {data.get('travel_date', 'N/A')}\n"
+        
+        if data.get('selected_train'):
+            train = data['selected_train']
+            summary += f"🚆 **Train:** {train.get('trainNumber', 'N/A')} - {train.get('trainName', 'N/A')}\n"
+        
+        if data.get('class_preference'):
+            summary += f"🎫 **Class:** {data['class_preference']}\n"
             
-            selected_class = None
+        if data.get('passengers'):
+            summary += f"👥 **Passengers:** {data['passengers']}\n"
+        
+        summary += "\nI'll now proceed with the IRCTC booking. Please wait..."
+        return summary
+    
+    def _search_and_respond_trains(self, from_station: str, to_station: str, time_filter: str, session_id: str) -> Dict:
+        """Search trains and provide formatted response"""
+        result = self.railradar.get_trains_between_stations(from_station, to_station)
+        session = self.sessions[session_id]
+        
+        if result.get('success') and result.get('data'):
+            trains = result['data']
             
-            # Try to match by class code or name
-            for user_term, class_code in class_mappings.items():
-                if user_term in msg_lower:
-                    selected_class = class_code
-                    break
+            # Apply time filtering if specified
+            if time_filter:
+                trains = self._filter_trains_by_time(trains, time_filter)
             
-            # Try to match by number (1, 2, 3, etc.) from the class list
-            if not selected_class:
-                numbers = re.findall(r'\b([1-6])\b', user_message)
-                if numbers:
-                    try:
-                        class_num = int(numbers[0]) - 1
-                        # Default available classes (this should come from train data)
-                        available_classes = ['2S', 'SL', '3A', '2A', '1A', 'CC']
-                        if 0 <= class_num < len(available_classes):
-                            selected_class = available_classes[class_num]
-                    except:
-                        pass
+            trains = trains[:5]  # Limit to 5 trains
             
-            if selected_class:
-                prefs['travel_class'] = selected_class
-                return self._ask_for_next_info(session_id)
-            else:
-                response = "I couldn't understand the class selection. Please choose from the available classes or use numbers (1, 2, 3, etc.)."
-                self.conversations[session_id].append(f"Assistant: {response}")
-                return {'message': response, 'actions': []}
+            if trains:
+                session['available_trains'] = trains
                 
-        except Exception as e:
-            msg = f"Sorry, there was an error processing your class selection: {str(e)}"
-            self.conversations[session_id].append(f"Assistant: {msg}")
-            return {'message': msg, 'actions': []}
+                message = f"Here are the available trains from {from_station} to {to_station}:\n\n"
+                for i, train in enumerate(trains, 1):
+                    dept_time = self._format_time(train['fromStationSchedule']['departureMinutes'])
+                    arr_time = self._format_time(train['toStationSchedule']['arrivalMinutes'])
+                    journey_time = self._calculate_journey_time(train)
+                    
+                    message += f"**{i}. {train['trainNumber']} - {train['trainName']}**\n"
+                    message += f"   🚂 Departure: {dept_time} → Arrival: {arr_time}\n"
+                    message += f"   ⏱️ Journey: {journey_time}\n\n"
+                
+                message += "Which train would you prefer? Just tell me the number or train name!"
+                
+                session['conversation'].append(f"Assistant: {message}")
+                return {'message': message, 'actions': []}
+            
+            else:
+                message = f"Sorry, no trains found from {from_station} to {to_station} with your time preference. Would you like to see all available trains?"
+                session['conversation'].append(f"Assistant: {message}")
+                return {'message': message, 'actions': []}
+        
+        else:
+            message = "I'm having trouble finding trains right now. Could you please try again?"
+            session['conversation'].append(f"Assistant: {message}")
+            return {'message': message, 'actions': []}
     
     def _filter_trains_by_time(self, trains: List, time_preference: str) -> List:
         """Filter trains based on time preference"""
-        if not time_preference or time_preference == 'any':
+        if not time_preference or 'any' in time_preference.lower():
             return trains
-        
-        filtered_trains = []
-        time_pref_lower = time_preference.lower()
-        
-        # Handle specific time constraints like "after 8AM", "before 6PM"
-        after_match = re.search(r'after\s*(\d{1,2})(?::(\d{2}))?\s*([ap]m)?', time_pref_lower)
-        before_match = re.search(r'before\s*(\d{1,2})(?::(\d{2}))?\s*([ap]m)?', time_pref_lower)
+            
+        filtered = []
+        pref_lower = time_preference.lower()
         
         for train in trains:
             dept_minutes = train['fromStationSchedule']['departureMinutes']
             dept_hour = dept_minutes // 60
-            dept_min = dept_minutes % 60
             
-            include_train = True
+            # Parse different time preferences
+            include = False
             
-            if after_match:
-                hour = int(after_match.group(1))
-                minute = int(after_match.group(2)) if after_match.group(2) else 0
-                am_pm = after_match.group(3)
-                
-                # Convert to 24-hour format
-                if am_pm == 'pm' and hour != 12:
-                    hour += 12
-                elif am_pm == 'am' and hour == 12:
-                    hour = 0
-                elif not am_pm and hour <= 12:  # Assume AM if no AM/PM specified and hour <= 12
-                    pass  # Keep as is
-                
-                min_departure_minutes = hour * 60 + minute
-                if dept_minutes < min_departure_minutes:
-                    include_train = False
-                    
-            elif before_match:
-                hour = int(before_match.group(1))
-                minute = int(before_match.group(2)) if before_match.group(2) else 0
-                am_pm = before_match.group(3)
-                
-                # Convert to 24-hour format
-                if am_pm == 'pm' and hour != 12:
-                    hour += 12
-                elif am_pm == 'am' and hour == 12:
-                    hour = 0
-                
-                max_departure_minutes = hour * 60 + minute
-                if dept_minutes > max_departure_minutes:
-                    include_train = False
-                    
-            elif time_preference == 'morning' and not (5 <= dept_hour <= 11):
-                include_train = False
-            elif time_preference == 'afternoon' and not (12 <= dept_hour <= 17):
-                include_train = False
-            elif time_preference == 'evening' and not (18 <= dept_hour <= 21):
-                include_train = False
-            elif time_preference == 'night' and not (dept_hour >= 22 or dept_hour <= 4):
-                include_train = False
-            
-            if include_train:
-                filtered_trains.append(train)
-        
-        return filtered_trains if filtered_trains else trains  # Return all if no matches
-    
-    def _calculate_journey_time(self, train: Dict) -> str:
-        """Calculate and format journey time"""
-        try:
-            dept_minutes = train['fromStationSchedule']['departureMinutes']
-            arr_minutes = train['toStationSchedule']['arrivalMinutes']
-            
-            # Handle next-day arrivals
-            if arr_minutes < dept_minutes:
-                arr_minutes += 24 * 60  # Add 24 hours
-            
-            journey_minutes = arr_minutes - dept_minutes
-            journey_hours = journey_minutes // 60
-            journey_mins = journey_minutes % 60
-            
-            if journey_hours > 0:
-                return f"{journey_hours}h {journey_mins}m"
+            if 'morning' in pref_lower and 5 <= dept_hour <= 11:
+                include = True
+            elif 'afternoon' in pref_lower and 12 <= dept_hour <= 17:
+                include = True
+            elif 'evening' in pref_lower and 18 <= dept_hour <= 21:
+                include = True
+            elif 'night' in pref_lower and (dept_hour >= 22 or dept_hour <= 4):
+                include = True
+            elif 'after' in pref_lower:
+                # Parse "after 8AM" type preferences
+                import re
+                match = re.search(r'after\s*(\d{1,2})', pref_lower)
+                if match:
+                    after_hour = int(match.group(1))
+                    if dept_hour >= after_hour:
+                        include = True
             else:
-                return f"{journey_mins}m"
-        except:
-            return "N/A"
+                include = True  # Default include if can't parse
+            
+            if include:
+                filtered.append(train)
+        
+        return filtered if filtered else trains
     
     def _format_time(self, minutes: int) -> str:
         """Convert minutes to HH:MM format"""
         hours = minutes // 60
         mins = minutes % 60
         return f"{hours:02d}:{mins:02d}"
+    
+    def _calculate_journey_time(self, train: Dict) -> str:
+        """Calculate journey time"""
+        try:
+            dept_minutes = train['fromStationSchedule']['departureMinutes']
+            arr_minutes = train['toStationSchedule']['arrivalMinutes']
+            
+            if arr_minutes < dept_minutes:
+                arr_minutes += 24 * 60  # Next day arrival
+            
+            journey_minutes = arr_minutes - dept_minutes
+            hours = journey_minutes // 60
+            mins = journey_minutes % 60
+            
+            return f"{hours}h {mins}m"
+        except:
+            return "N/A"
+
+    def _generate_ai_response(self, user_message: str, session_id: str) -> Dict:
+        """Generate AI response using Gemini with function calling"""
+        session = self.sessions[session_id]
+        
+        # Recent conversation context
+        context = "\n".join(session['conversation'][-10:])
+        current_data = session['booking_data']
+        
+        # Create the prompt
+        prompt = f"""{self.system_prompt}
+
+CONVERSATION HISTORY:
+{context}
+
+CURRENT BOOKING DATA:
+{json.dumps(current_data, indent=2)}
+
+USER'S LATEST MESSAGE: "{user_message}"
+
+Analyze the user's message and:
+1. Extract any booking information (source, destination, date, time, passengers, etc.)
+2. Respond conversationally and helpfully
+3. Guide the conversation toward completing the booking
+4. If ready to search trains, indicate that
+5. If user selected a train, proceed to booking
+
+Respond naturally and conversationally. Don't be robotic."""
+
+        try:
+            # First, extract any new information from the message
+            extracted_info = self._extract_booking_info_ai(user_message, session_id)
+            
+            # Update session data
+            session['booking_data'].update(extracted_info)
+            
+            # Determine next action
+            return self._determine_next_action(user_message, session_id)
+            
+        except Exception as e:
+            return {
+                'message': "I'm having trouble processing that. Could you please rephrase?",
+                'actions': []
+            }
+
+    def _extract_booking_info_ai(self, user_message: str, session_id: str) -> Dict:
+        """Use AI to extract booking information from user message"""
+        
+        extract_prompt = f"""Extract booking information from this message: "{user_message}"
+
+Return a JSON object with any of these fields you can identify:
+- source_city: departure city/station name
+- destination_city: arrival city/station name  
+- travel_date: travel date or date description
+- time_preference: preferred departure time or time of day
+- passengers: number of passengers
+- train_selection: if user is selecting a train (number/name)
+- class_preference: preferred coach class
+- budget_preference: price range or budget
+
+Only include fields that are clearly mentioned. If nothing is clear, return empty object.
+
+Examples:
+"I want to go from Delhi to Mumbai tomorrow morning" -> {{"source_city": "Delhi", "destination_city": "Mumbai", "travel_date": "tomorrow", "time_preference": "morning"}}
+"2 passengers in 3AC" -> {{"passengers": 2, "class_preference": "3AC"}}
+"Train number 2" -> {{"train_selection": "2"}}
+
+Message: "{user_message}"
+JSON:"""
+
+        try:
+            response = self.model.generate_content(extract_prompt)
+            result = response.text.strip()
+            
+            # Clean the response to extract JSON
+            if '```json' in result:
+                result = result.split('```json')[1].split('```')[0].strip()
+            elif '```' in result:
+                result = result.split('```')[1].strip()
+            
+            return json.loads(result) if result.strip() != '{}' else {}
+            
+        except Exception as e:
+            print(f"Error extracting info: {e}")
+            return {}
+
+    def _determine_next_action(self, user_message: str, session_id: str) -> Dict:
+        """Determine what action to take next based on conversation state"""
+        session = self.sessions[session_id]
+        booking_data = session['booking_data']
+        
+        # Check if user is selecting from available trains
+        if (session['available_trains'] and 
+            session['current_step'] == 'train_selection' and
+            self._looks_like_train_selection(user_message)):
+            return self._handle_train_selection(user_message, session_id)
+        
+        # Check if we have enough info to search for trains
+        if (booking_data.get('source_city') and 
+            booking_data.get('destination_city') and 
+            booking_data.get('travel_date') and
+            booking_data.get('time_preference') and
+            booking_data.get('passengers') and
+            not session['available_trains']):
+            
+            return self._search_and_show_trains(session_id)
+        
+        # Check if ready to book (train selected)
+        if (booking_data.get('selected_train') and 
+            booking_data.get('class_preference')):
+            return self._initiate_booking(session_id)
+        
+        # Otherwise, continue conversation to gather missing info
+        return self._continue_conversation(user_message, session_id)
+
+    def _continue_conversation(self, user_message: str, session_id: str) -> Dict:
+        """Continue the conversation to gather missing information"""
+        session = self.sessions[session_id]
+        booking_data = session['booking_data']
+        
+        # Determine what's missing
+        missing_fields = []
+        if not booking_data.get('source_city'):
+            missing_fields.append('departure city')
+        if not booking_data.get('destination_city'):
+            missing_fields.append('destination city')
+        if not booking_data.get('travel_date'):
+            missing_fields.append('travel date')
+        if not booking_data.get('time_preference'):
+            missing_fields.append('preferred time')
+        if not booking_data.get('passengers'):
+            missing_fields.append('number of passengers')
+
+        conversation_prompt = f"""{self.system_prompt}
+
+CURRENT BOOKING DATA:
+{json.dumps(booking_data, indent=2)}
+
+MISSING INFORMATION: {', '.join(missing_fields) if missing_fields else 'None'}
+
+USER MESSAGE: "{user_message}"
+
+Generate a helpful, conversational response that:
+1. Acknowledges what the user said
+2. Confirms any information already collected
+3. Naturally asks for the next missing piece of information
+4. Provides helpful suggestions when appropriate
+
+Keep it friendly and conversational, not robotic."""
+
+        try:
+            response = self.model.generate_content(conversation_prompt)
+            message = response.text.strip()
+            
+            return {
+                'message': message,
+                'actions': []
+            }
+            
+        except Exception as e:
+            # Fallback response
+            if missing_fields:
+                return {
+                    'message': f"I'd be happy to help you book a train! I still need to know your {missing_fields[0]}. Could you share that with me?",
+                    'actions': []
+                }
+            else:
+                return {
+                    'message': "Great! Let me search for available trains for you.",
+                    'actions': []
+                }
+
+    def _search_and_show_trains(self, session_id: str) -> Dict:
+        """Search for trains and display options"""
+        session = self.sessions[session_id]
+        booking_data = session['booking_data']
+        
+        try:
+            # Convert city names to station codes
+            source_code = self._get_station_code(booking_data['source_city'])
+            dest_code = self._get_station_code(booking_data['destination_city'])
+            
+            if not source_code or not dest_code:
+                return {
+                    'message': "I'm having trouble finding the station codes. Could you please specify the exact station names?",
+                    'actions': []
+                }
+            
+            # Search for trains using RailRadar API
+            result = self.railradar.get_trains_between_stations(source_code, dest_code)
+            
+            if not result.get('success') or not result.get('data'):
+                return {
+                    'message': f"I couldn't find any trains between {booking_data['source_city']} and {booking_data['destination_city']}. Could you check the station names?",
+                    'actions': []
+                }
+            
+            # Filter trains based on time preference
+            trains = result['data'][:10]  # Limit to 10 trains
+            filtered_trains = self._filter_trains_by_preference(trains, booking_data.get('time_preference'))
+            
+            if not filtered_trains:
+                return {
+                    'message': f"No trains found matching your time preference. Would you like to see all available trains?",
+                    'actions': []
+                }
+            
+            # Store trains and update session
+            session['available_trains'] = filtered_trains
+            session['current_step'] = 'train_selection'
+            
+            # Create response message
+            message = self._format_train_options(filtered_trains, booking_data)
+            
+            return {
+                'message': message,
+                'actions': []
+            }
+            
+        except Exception as e:
+            return {
+                'message': f"I encountered an error while searching for trains: {str(e)}. Please try again.",
+                'actions': []
+            }
+
+    def _format_train_options(self, trains: List[Dict], booking_data: Dict) -> str:
+        """Format train options for display"""
+        source = booking_data['source_city']
+        dest = booking_data['destination_city']
+        date = booking_data['travel_date']
+        passengers = booking_data['passengers']
+        
+        message = f"Perfect! I found {len(trains)} trains from {source} to {dest} for {passengers} passenger(s) on {date}:\n\n"
+        
+        for i, train in enumerate(trains, 1):
+            dept_time = self._format_time(train['fromStationSchedule']['departureMinutes'])
+            arr_time = self._format_time(train['toStationSchedule']['arrivalMinutes'])
+            duration = self._calculate_duration(train)
+            
+            message += f"**{i}. {train['trainNumber']} - {train['trainName']}**\n"
+            message += f"   🚂 Departure: {dept_time} → Arrival: {arr_time}\n"
+            message += f"   ⏱️ Duration: {duration}\n\n"
+        
+        message += "Which train would you prefer? You can tell me the number (1, 2, 3...) or the train name!"
+        
+        return message
+
+    def _handle_train_selection(self, user_message: str, session_id: str) -> Dict:
+        """Handle user's train selection"""
+        session = self.sessions[session_id]
+        trains = session['available_trains']
+        
+        try:
+            selected_train = None
+            
+            # Try to match by number (1, 2, 3...)
+            numbers = re.findall(r'\b(\d+)\b', user_message)
+            if numbers:
+                try:
+                    index = int(numbers[0]) - 1
+                    if 0 <= index < len(trains):
+                        selected_train = trains[index]
+                except ValueError:
+                    pass
+            
+            # Try to match by train number or name
+            if not selected_train:
+                msg_lower = user_message.lower()
+                for train in trains:
+                    if (train['trainNumber'] in user_message or 
+                        any(word in train['trainName'].lower() for word in msg_lower.split() if len(word) > 3)):
+                        selected_train = train
+                        break
+            
+            if selected_train:
+                # Store selected train
+                session['booking_data']['selected_train'] = selected_train
+                session['current_step'] = 'class_selection'
+                
+                # Show available classes
+                return self._show_class_options(selected_train, session_id)
+            else:
+                return {
+                    'message': "I couldn't identify which train you selected. Could you please specify the number (1, 2, 3...) or train number?",
+                    'actions': []
+                }
+                
+        except Exception as e:
+            return {
+                'message': f"Error processing train selection: {str(e)}",
+                'actions': []
+            }
+
+    def _show_class_options(self, train: Dict, session_id: str) -> str:
+        """Show available class options for selected train"""
+        
+        # Get available classes (this would come from API in real implementation)
+        available_classes = self._get_available_classes(train)
+        
+        message = f"Excellent choice! You selected:\n"
+        message += f"**{train['trainNumber']} - {train['trainName']}**\n\n"
+        message += "Available classes:\n\n"
+        
+        class_names = {
+            '1A': 'First AC (1A)',
+            '2A': 'Second AC (2A)', 
+            '3A': 'Third AC (3A)',
+            'SL': 'Sleeper (SL)',
+            'CC': 'Chair Car (CC)',
+            'EC': 'Executive Chair Car (EC)',
+            '2S': 'Second Sitting (2S)'
+        }
+        
+        for i, class_code in enumerate(available_classes, 1):
+            class_name = class_names.get(class_code, class_code)
+            message += f"{i}. {class_name}\n"
+        
+        message += "\nWhich class would you prefer?"
+        
+        return {
+            'message': message,
+            'actions': []
+        }
+
+    def _initiate_booking(self, session_id: str) -> Dict:
+        """Initiate the booking process"""
+        session = self.sessions[session_id]
+        booking_data = session['booking_data']
+        
+        # Create booking summary
+        train = booking_data['selected_train']
+        
+        summary = f"""Perfect! Here's your booking summary:
+
+    Train: {train['trainNumber']} - {train['trainName']}\n
+    Route: {booking_data['source_city']} → {booking_data['destination_city']}\n
+    Date: {booking_data['travel_date']}\n
+    Class: {booking_data['class_preference']}\n
+    Passengers: {booking_data['passengers']}\n
+
+I'll now proceed to IRCTC website to complete your booking. Please wait while I navigate and fill in the details..."""
+
+        return {
+            'message': summary,
+            'actions': [{
+                'type': 'navigate_to_irctc',
+                'data': booking_data
+            }]
+        }
+
+    def _get_station_code(self, city_name: str) -> Optional[str]:
+        """Get station code for city name"""
+        # This would typically call an API or database
+        # For now, using a basic mapping
+        station_map = {
+            'delhi': 'NDLS', 'new delhi': 'NDLS',
+            'mumbai': 'CSTM', 'bombay': 'CSTM',
+            'bangalore': 'SBC', 'bengaluru': 'SBC',
+            'chennai': 'MAS', 'madras': 'MAS',
+            'kolkata': 'HWH', 'calcutta': 'HWH',
+            'hyderabad': 'SC',
+            'pune': 'PUNE',
+            'ahmedabad': 'ADI',
+            'jaipur': 'JP',
+            'chandigarh': 'CDG',
+            'lucknow': 'LJN',
+            'agra': 'AGC'
+        }
+        
+        return station_map.get(city_name.lower())
+
+    def get_session_data(self, session_id: str) -> Dict:
+        """Get current session data"""
+        return self.sessions.get(session_id, {})
+
+    def reset_session(self, session_id: str):
+        """Reset session data"""
+        if session_id in self.sessions:
+            del self.sessions[session_id]
