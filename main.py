@@ -60,5 +60,35 @@ def book_train():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/booking_status', methods=['GET'])
+def booking_status():
+    """Check current booking status"""
+    try:
+        status = irctc_automation.get_booking_status()
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/keep_alive', methods=['POST'])
+def keep_alive():
+    """Keep the booking session alive"""
+    try:
+        result = irctc_automation.keep_session_alive()
+        return jsonify({'success': result})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/close_booking', methods=['POST'])
+def close_booking():
+    """Close the booking browser session"""
+    try:
+        irctc_automation.close_driver()
+        return jsonify({'success': True, 'message': 'Booking session closed'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
