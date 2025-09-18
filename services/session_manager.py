@@ -373,6 +373,7 @@ class SessionManager:
         missing = []
         travel_info = session.travel_info
         
+        # Essential information (required before search)
         if not travel_info.source_city:
             missing.append('source_city')
         if not travel_info.destination_city:
@@ -381,6 +382,12 @@ class SessionManager:
             missing.append('travel_date')
         if not travel_info.passengers or travel_info.passengers <= 0:
             missing.append('passengers')
+            
+        # Important preferences (should be collected before showing trains)
+        if not travel_info.class_preference:
+            missing.append('class_preference')
+        if not travel_info.time_preference:
+            missing.append('time_preference')
             
         return missing
     

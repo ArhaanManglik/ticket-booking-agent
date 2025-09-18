@@ -117,6 +117,16 @@ class AIResponseHandler:
                 "Just need one more detail - how many people will be traveling?",
                 "Perfect! How many train tickets do you need?"
             ],
+            'missing_class_preference': [
+                "What class would you prefer? (Sleeper, 3AC, 2AC, 1AC, or Chair Car)",
+                "Which travel class are you looking for? Options: Sleeper, 3AC, 2AC, 1AC, Chair Car",
+                "Please choose your preferred class: Sleeper (cheapest), 3AC, 2AC, 1AC (most comfortable), or Chair Car"
+            ],
+            'missing_time_preference': [
+                "What time do you prefer to travel? (morning, afternoon, evening, or night)",
+                "Do you have any time preference for your journey? (early morning, morning, afternoon, evening, night)",
+                "When would you like to depart? Please specify: morning, afternoon, evening, or night"
+            ],
             'search_in_progress': [
                 "Let me search for the best trains from {source} to {destination} for {passengers} passenger(s) on {date}...",
                 "Searching for available trains on your route. Please wait a moment...",
@@ -216,7 +226,7 @@ class AIResponseHandler:
             }
         
         # Prioritize missing information
-        priority_order = ['source_city', 'destination_city', 'travel_date', 'passengers']
+        priority_order = ['source_city', 'destination_city', 'travel_date', 'passengers', 'class_preference', 'time_preference']
         next_field = None
         
         for field in priority_order:
@@ -496,6 +506,10 @@ I'll now proceed to the IRCTC website to complete your booking. Please wait whil
             return templates['missing_date'][0].format(source=source, destination=dest)
         elif field == 'passengers':
             return templates['missing_passengers'][0]
+        elif field == 'class_preference':
+            return templates['missing_class_preference'][0]
+        elif field == 'time_preference':
+            return templates['missing_time_preference'][0]
         else:
             return "Could you please provide more details about your travel plans?"
     
