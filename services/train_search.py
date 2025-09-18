@@ -242,7 +242,7 @@ class TrainSearchService:
         
         Args:
             trains: List of train dictionaries
-            time_preference: Time preference (morning, afternoon, evening, night)
+            time_preference: Time preference (morning, afternoon, evening, night, "after 8AM", etc.)
             
         Returns:
             Filtered list of trains
@@ -250,16 +250,23 @@ class TrainSearchService:
         if not time_preference:
             return trains
         
+        pref_lower = time_preference.lower().strip()
+        
+        # Handle specific time conditions like "after 8AM", "before 6PM", "anytime after 8AM"
+        if self._is_specific_time_condition(pref_lower):
+            return self._filter_by_specific_time(trains, pref_lower)
+        
+        # Handle general time ranges
         time_ranges = {
             'early morning': (0, 6),      # 12 AM - 6 AM
             'morning': (6, 12),           # 6 AM - 12 PM
             'afternoon': (12, 17),        # 12 PM - 5 PM
             'evening': (17, 21),          # 5 PM - 9 PM
             'night': (21, 24),            # 9 PM - 12 AM
-            'late night': (21, 6)         # 9 PM - 6 AM (next day)
+            'late night': (21, 6),        # 9 PM - 6 AM (next day)
+            'anytime': (0, 24)            # Any time - no filtering
         }
         
-        pref_lower = time_preference.lower()
         time_range = None
         
         for key, range_val in time_ranges.items():
@@ -268,6 +275,10 @@ class TrainSearchService:
                 break
         
         if not time_range:
+            return trains
+        
+        # Special case: "anytime" means no filtering
+        if time_range == (0, 24):
             return trains
         
         filtered_trains = []
@@ -293,6 +304,89 @@ class TrainSearchService:
                 filtered_trains.append(train)
         
         return filtered_trains if filtered_trains else trains
+    
+    def _is_specific_time_condition(self, time_preference: str) -> bool:
+        """Check if time preference contains specific time conditions"""
+        conditions = ['after', 'before', 'between', 'am', 'pm', 'a.m.', 'p.m.', ':']
+        return any(condition in time_preference for condition in conditions)
+    
+    def _filter_by_specific_time(self, trains: List[Dict], time_condition: str) -> List[Dict]:
+        """Filter trains by specific time conditions like 'after 8AM'"""
+        try:
+            # Parse the time condition
+            if 'after' in time_condition:
+                # Extract time after "after"
+                after_part = time_condition.split('after')[-1].strip()
+                target_hour = self._parse_time_to_hour(after_part)
+                
+                if target_hour is not None:
+                    filtered_trains = []
+                    for train in trains:
+                        dept_minutes = train.get('fromStationSchedule', {}).get('departureMinutes', 0)
+                        dept_hour = dept_minutes // 60
+                        dept_minute = dept_minutes % 60
+                        train_time = dept_hour + (dept_minute / 60.0)  # Convert to decimal hours
+                        
+                        if train_time >= target_hour:
+                            filtered_trains.append(train)
+                    
+                    return filtered_trains if filtered_trains else trains
+            
+            elif 'before' in time_condition:
+                # Extract time after "before"
+                before_part = time_condition.split('before')[-1].strip()
+                target_hour = self._parse_time_to_hour(before_part)
+                
+                if target_hour is not None:
+                    filtered_trains = []
+                    for train in trains:
+                        dept_minutes = train.get('fromStationSchedule', {}).get('departureMinutes', 0)
+                        dept_hour = dept_minutes // 60
+                        dept_minute = dept_minutes % 60
+                        train_time = dept_hour + (dept_minute / 60.0)
+                        
+                        if train_time <= target_hour:
+                            filtered_trains.append(train)
+                    
+                    return filtered_trains if filtered_trains else trains
+        
+        except Exception as e:
+            print(f"Error filtering by specific time: {e}")
+        
+        # Return all trains if parsing fails
+        return trains
+    
+    def _parse_time_to_hour(self, time_str: str) -> Optional[float]:
+        """Parse time string to decimal hour (e.g., '8AM' -> 8.0, '2:30PM' -> 14.5)"""
+        time_str = time_str.strip().replace(' ', '').lower()
+        
+        try:
+            # Handle AM/PM
+            is_pm = 'pm' in time_str or 'p.m.' in time_str
+            is_am = 'am' in time_str or 'a.m.' in time_str
+            
+            # Remove AM/PM indicators
+            time_str = time_str.replace('am', '').replace('pm', '').replace('a.m.', '').replace('p.m.', '')
+            
+            # Parse hour and minute
+            if ':' in time_str:
+                parts = time_str.split(':')
+                hour = int(parts[0])
+                minute = int(parts[1]) if len(parts) > 1 else 0
+            else:
+                hour = int(time_str)
+                minute = 0
+            
+            # Convert to 24-hour format
+            if is_pm and hour != 12:
+                hour += 12
+            elif is_am and hour == 12:
+                hour = 0
+            
+            return hour + (minute / 60.0)
+        
+        except (ValueError, IndexError):
+            return None
     
     def sort_trains(self, trains: List[Dict], sort_by: str = 'departure_time') -> List[Dict]:
         """
