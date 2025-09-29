@@ -209,7 +209,7 @@ class AIResponseHandler:
     def generate_information_request(self, missing_fields: List[str], 
                                    travel_info: TravelInfo) -> Dict:
         """
-        Generate specific requests for missing information
+        Generate specific requests for missing information - NO AI CALLS, TEMPLATE BASED
         
         Args:
             missing_fields: List of missing information fields
@@ -218,7 +218,12 @@ class AIResponseHandler:
         Returns:
             Response dictionary
         """
+        print(f"🎯🎯🎯 RESPONSE HANDLER: Generating info request")
+        print(f"🎯 RESPONSE HANDLER: Missing fields: {missing_fields}")
+        print(f"🎯 RESPONSE HANDLER: Current travel info: {travel_info.__dict__}")
+        
         if not missing_fields:
+            print(f"🎯 RESPONSE HANDLER: No missing fields - ready to search")
             return {
                 'message': "I have all the information needed! Let me search for trains.",
                 'response_type': 'search_ready',
@@ -237,15 +242,25 @@ class AIResponseHandler:
         if not next_field:
             next_field = missing_fields[0]
         
-        # Generate contextual message
-        message = self._get_field_request_message(next_field, travel_info)
+        print(f"🎯 RESPONSE HANDLER: Next field to request: {next_field}")
         
-        return {
+        # Generate contextual message using templates (NO AI)
+        try:
+            message = self._get_field_request_message(next_field, travel_info)
+            print(f"🎯 RESPONSE HANDLER: Generated message: '{message}'")
+        except Exception as template_error:
+            print(f"🎯🎯🎯 RESPONSE HANDLER: Template generation failed: {template_error}")
+            raise template_error
+        
+        result = {
             'message': message,
             'response_type': 'information_request',
             'missing_field': next_field,
             'actions': [f'await_{next_field}']
         }
+        
+        print(f"🎯 RESPONSE HANDLER: SUCCESS - Generated response: {result}")
+        return result
     
     def generate_search_results_response(self, search_results: Dict, 
                                        travel_info: TravelInfo) -> Dict:

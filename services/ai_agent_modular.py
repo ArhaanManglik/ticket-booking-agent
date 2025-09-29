@@ -66,21 +66,58 @@ class ModularTrainBookingAgent:
             if session.current_step == 'booking_method_selection':
                 return self._handle_booking_method_selection(user_message, session_id)
             
-            # Extract information using AI
+            # 🎯 GEMINI INTENT CLASSIFICATION FIRST 🎯
+            print(f"🎯 PROCESSING MESSAGE: '{user_message}'")
             conversation_context = self.session_manager.get_conversation_context(session_id)
-            extracted_info = self.ai_extractor.extract_travel_information(
-                user_message, conversation_context
-            )
+            print(f"🎯 CONVERSATION CONTEXT: {conversation_context}")
             
-            # Process date/time information with advanced parsing
-            if extracted_info.travel_date:
-                datetime_result = self.datetime_processor.parse_datetime_expression(
+            # Use Gemini AI to classify the query type
+            query_type = self._classify_query_with_gemini(user_message, conversation_context)
+            print(f"🎯 GEMINI CLASSIFIED QUERY TYPE: {query_type}")
+            
+            # Handle general queries with Gemini conversational response
+            if query_type == 'general':
+                print(f"🎯 ROUTING TO: Gemini conversational response")
+                return self._handle_general_query_with_gemini(user_message, session_id, conversation_context)
+            
+            # Only do travel data extraction for travel-related messages
+            print(f"🎯 ROUTING TO: Travel data extraction flow")
+            
+            # 🔥 GEMINI EXTRACTION START 🔥
+            print(f"🚀 GEMINI EXTRACTION: Starting AI extraction for message: '{user_message}'")
+            print(f"🚀 GEMINI EXTRACTION: Context: {conversation_context}")
+            
+            try:
+                print(f"🚀 GEMINI EXTRACTION: Calling ai_extractor.extract_travel_information()")
+                extracted_info = self.ai_extractor.extract_travel_information(
                     user_message, conversation_context
                 )
-                if datetime_result.get('travel_date'):
-                    extracted_info.travel_date = datetime_result['travel_date']
-                if datetime_result.get('time_preference'):
-                    extracted_info.time_preference = datetime_result['time_preference']
+                print(f"🚀 GEMINI EXTRACTION: SUCCESS - Extracted info: {extracted_info.__dict__}")
+            except Exception as extraction_error:
+                print(f"🔥 GEMINI EXTRACTION: FAILED - Error: {extraction_error}")
+                import traceback
+                traceback.print_exc()
+                # NO FALLBACK - Let it fail
+                raise extraction_error
+            
+            # 🔥 GEMINI DATETIME PROCESSING 🔥
+            print(f"🚀 GEMINI DATETIME: Starting datetime processing")
+            if extracted_info.travel_date:
+                try:
+                    print(f"🚀 GEMINI DATETIME: Calling parse_datetime_expression()")
+                    datetime_result = self.datetime_processor.parse_datetime_expression(
+                        user_message, conversation_context
+                    )
+                    print(f"🚀 GEMINI DATETIME: SUCCESS - Result: {datetime_result}")
+                    if datetime_result.get('travel_date'):
+                        extracted_info.travel_date = datetime_result['travel_date']
+                    if datetime_result.get('time_preference'):
+                        extracted_info.time_preference = datetime_result['time_preference']
+                except Exception as datetime_error:
+                    print(f"🔥 GEMINI DATETIME: FAILED - Error: {datetime_error}")
+                    import traceback
+                    traceback.print_exc()
+                    # NO FALLBACK - Continue with original extracted_info
             
             # Merge with existing travel information
             current_info = session.travel_info
@@ -96,10 +133,13 @@ class ModularTrainBookingAgent:
             return self._determine_next_action(session_id, user_message)
             
         except Exception as e:
-            print(f"Error processing message: {e}")
+            print(f"🔥🔥🔥 CRITICAL ERROR: {e}")
+            print(f"🔥🔥🔥 MESSAGE THAT CAUSED ERROR: '{user_message}'")
+            print(f"🔥🔥🔥 SESSION ID: {session_id}")
             import traceback
             traceback.print_exc()
-            return self._generate_error_response(str(e))
+            # NO FALLBACK ERROR RESPONSE - Let the error bubble up
+            raise e
     
     def _determine_next_action(self, session_id: str, user_message: str) -> Dict:
         """
@@ -118,16 +158,27 @@ class ModularTrainBookingAgent:
         print(f"Missing info: {missing_info}")
         
         if missing_info:
-            # Generate request for missing information
-            response = self.response_handler.generate_information_request(
-                missing_info, session.travel_info
-            )
+            # 🔥 GEMINI RESPONSE GENERATION 🔥
+            print(f"🚀 GEMINI RESPONSE: Generating information request for missing: {missing_info}")
+            try:
+                print(f"🚀 GEMINI RESPONSE: Calling response_handler.generate_information_request()")
+                response = self.response_handler.generate_information_request(
+                    missing_info, session.travel_info
+                )
+                print(f"🚀 GEMINI RESPONSE: SUCCESS - Generated response: {response.get('message', '')[:100]}...")
+            except Exception as response_error:
+                print(f"🔥 GEMINI RESPONSE: FAILED - Error: {response_error}")
+                import traceback
+                traceback.print_exc()
+                # NO FALLBACK - Let it fail
+                raise response_error
             
             # Update session step
             self.session_manager.update_session_step(session_id, 'collecting_info')
             
         else:
             # We have all required information, search for trains
+            print(f"🚀 TRAIN SEARCH: All info collected, searching for trains")
             response = self._search_and_present_trains(session_id)
         
         # Add assistant message to conversation history
@@ -548,3 +599,136 @@ class ModularTrainBookingAgent:
                 'natural_language_processing': True
             }
         }
+    
+    def _classify_query_with_gemini(self, user_message: str, conversation_context: str) -> str:
+        """
+        Use Gemini AI to classify if query contains travel data or is general
+        
+        Args:
+            user_message: User's message
+            conversation_context: Previous conversation context
+            
+        Returns:
+            'travel' if contains travel booking data, 'general' if general query
+        """
+        print(f"🔥🔥🔥 GEMINI CLASSIFICATION: Starting query classification")
+        print(f"🔥 GEMINI CLASSIFICATION: Message: '{user_message}'")
+        
+        try:
+            # Import here to avoid circular imports
+            import google.generativeai as genai
+            import os
+            
+            # Configure Gemini
+            genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            
+            prompt = f"""
+            Analyze this user message and determine if it contains travel booking information or is a general query.
+            
+            User message: "{user_message}"
+            Previous context: {conversation_context if conversation_context else "None"}
+            
+            Classification rules:
+            1. If the message contains specific cities, dates, travel requests, or booking information → respond with "travel"
+            2. If the message is a greeting, general question, travel advice request, or casual conversation → respond with "general"
+            
+            Examples:
+            - "I want to go from Delhi to Mumbai tomorrow" → travel
+            - "Book me a ticket to Goa" → travel
+            - "I am travelling from city Delhi" → travel
+            - "hello" → general
+            - "hey" → general
+            - "I don't know can you recommend me some places to travel to" → general
+            - "what are good places to visit" → general
+            
+            Respond with only ONE WORD: either "travel" or "general"
+            """
+            
+            print(f"🔥 GEMINI CLASSIFICATION: Sending prompt to Gemini")
+            response = model.generate_content(prompt)
+            classification = response.text.strip().lower()
+            
+            print(f"🔥 GEMINI CLASSIFICATION: Raw response: '{response.text}'")
+            print(f"🔥 GEMINI CLASSIFICATION: Cleaned classification: '{classification}'")
+            
+            # Validate response
+            if classification in ['travel', 'general']:
+                print(f"🔥 GEMINI CLASSIFICATION: SUCCESS - Classified as: {classification}")
+                return classification
+            else:
+                print(f"🔥 GEMINI CLASSIFICATION: Invalid response, defaulting to 'general'")
+                return 'general'
+                
+        except Exception as e:
+            print(f"🔥🔥🔥 GEMINI CLASSIFICATION: FAILED - Error: {e}")
+            import traceback
+            traceback.print_exc()
+            # NO FALLBACK - Let it fail
+            raise e
+    
+    def _handle_general_query_with_gemini(self, user_message: str, session_id: str, conversation_context: str) -> Dict:
+        """
+        Use Gemini AI to generate conversational response for general queries
+        
+        Args:
+            user_message: User's message
+            session_id: Session identifier  
+            conversation_context: Previous conversation context
+            
+        Returns:
+            Response dictionary
+        """
+        print(f"🔥🔥🔥 GEMINI CONVERSATION: Starting conversational response generation")
+        print(f"🔥 GEMINI CONVERSATION: Message: '{user_message}'")
+        
+        try:
+            # Import here to avoid circular imports
+            import google.generativeai as genai
+            import os
+            
+            # Configure Gemini
+            genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            
+            prompt = f"""
+            You are a friendly AI travel assistant for Indian railways. The user has sent a general message that doesn't contain specific travel booking information.
+            
+            User message: "{user_message}"
+            Previous context: {conversation_context if conversation_context else "This is the start of the conversation"}
+            
+            Guidelines for your response:
+            1. If it's a greeting → Respond warmly and introduce yourself as a travel assistant
+            2. If they're asking for travel advice/recommendations → Provide helpful suggestions about Indian destinations
+            3. If it's casual conversation → Respond naturally while guiding toward travel assistance
+            4. Always end by offering to help with train bookings
+            5. Keep responses conversational, helpful, and under 150 words
+            6. Focus on Indian destinations and train travel
+            
+            Generate a natural, helpful response:
+            """
+            
+            print(f"🔥 GEMINI CONVERSATION: Sending prompt to Gemini")
+            response = model.generate_content(prompt)
+            response_text = response.text.strip()
+            
+            print(f"🔥 GEMINI CONVERSATION: Generated response: '{response_text[:100]}...'")
+            
+            # Add to conversation history
+            self.session_manager.add_conversation_message(session_id, 'assistant', response_text)
+            
+            result = {
+                'message': response_text,
+                'response_type': 'conversational',
+                'actions': ['general_conversation']
+            }
+            
+            print(f"🔥 GEMINI CONVERSATION: SUCCESS - Generated conversational response")
+            return result
+            
+        except Exception as e:
+            print(f"🔥🔥🔥 GEMINI CONVERSATION: FAILED - Error: {e}")
+            import traceback
+            traceback.print_exc()
+            # NO FALLBACK - Let it fail
+            raise e

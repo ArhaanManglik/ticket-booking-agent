@@ -150,7 +150,7 @@ class AIInformationExtractor:
     
     def extract_travel_information(self, user_message: str, conversation_context: str = "") -> TravelInfo:
         """
-        Extract travel information from user message using AI
+        Extract travel information from user message using AI - NO FALLBACKS
         
         Args:
             user_message: The user's current message
@@ -159,79 +159,71 @@ class AIInformationExtractor:
         Returns:
             TravelInfo object with extracted information
         """
+        print(f"🔥🔥🔥 AI EXTRACTOR: Starting extraction")
+        print(f"🔥 AI EXTRACTOR: Message: '{user_message}'")
+        print(f"🔥 AI EXTRACTOR: Context: '{conversation_context}'")
+        
         try:
             # Prepare the prompt for AI extraction
+            print(f"🔥 AI EXTRACTOR: Building extraction prompt")
             prompt = self._build_extraction_prompt(user_message, conversation_context)
+            print(f"🔥 AI EXTRACTOR: Prompt built successfully")
             
             # Generate AI response with function calling
+            print(f"🔥 AI EXTRACTOR: Calling Gemini model.generate_content() with function tools")
             response = self.model.generate_content(
                 prompt,
                 tools=[self.extraction_tool],
                 tool_config={'function_calling_config': 'AUTO'}
             )
+            print(f"🔥 AI EXTRACTOR: Gemini response received successfully")
+            print(f"🔥 AI EXTRACTOR: Response type: {type(response)}")
+            print(f"🔥 AI EXTRACTOR: Response candidates: {len(response.candidates) if response.candidates else 0}")
             
             # Parse the AI response
-            if response.candidates[0].content.parts:
-                for part in response.candidates[0].content.parts:
+            if response.candidates and response.candidates[0].content.parts:
+                print(f"🔥 AI EXTRACTOR: Processing {len(response.candidates[0].content.parts)} response parts")
+                for i, part in enumerate(response.candidates[0].content.parts):
+                    print(f"🔥 AI EXTRACTOR: Part {i}: {type(part)}")
                     if hasattr(part, 'function_call'):
                         function_call = part.function_call
+                        print(f"🔥 AI EXTRACTOR: Function call found: {function_call.name}")
                         if function_call.name == "extract_travel_info":
-                            return self._parse_extraction_result(function_call.args)
+                            print(f"🔥 AI EXTRACTOR: Function args: {function_call.args}")
+                            result = self._parse_extraction_result(function_call.args)
+                            print(f"🔥 AI EXTRACTOR: SUCCESS - Extracted: {result.__dict__}")
+                            return result
             
-            # Fallback: try to parse response as JSON
-            response_text = response.text
+            # Try to parse response as JSON if no function call
+            print(f"🔥 AI EXTRACTOR: No function call found, trying JSON parsing")
+            response_text = response.text if hasattr(response, 'text') else str(response)
+            print(f"🔥 AI EXTRACTOR: Response text: '{response_text}'")
+            
             if response_text and '{' in response_text:
                 try:
+                    print(f"🔥 AI EXTRACTOR: Attempting JSON parse")
                     json_data = json.loads(response_text)
-                    return self._parse_extraction_result(json_data)
-                except json.JSONDecodeError:
-                    pass
+                    print(f"🔥 AI EXTRACTOR: JSON parsed successfully: {json_data}")
+                    result = self._parse_extraction_result(json_data)
+                    print(f"🔥 AI EXTRACTOR: SUCCESS - JSON Extracted: {result.__dict__}")
+                    return result
+                except json.JSONDecodeError as json_error:
+                    print(f"🔥 AI EXTRACTOR: JSON parsing failed: {json_error}")
             
-            # Return empty TravelInfo if extraction failed
-            return self._fallback_extraction(user_message)
+            # NO FALLBACK - If we reach here, Gemini completely failed
+            print(f"🔥🔥🔥 AI EXTRACTOR: COMPLETE FAILURE - No valid response from Gemini")
+            print(f"🔥🔥🔥 AI EXTRACTOR: Raw response: {response}")
+            raise Exception("Gemini AI extraction completely failed - no valid response received")
             
         except Exception as e:
-            print(f"Error in AI extraction: {e}")
-            return self._fallback_extraction(user_message)
+            print(f"🔥🔥🔥 AI EXTRACTOR: EXCEPTION OCCURRED: {e}")
+            print(f"🔥🔥🔥 AI EXTRACTOR: Exception type: {type(e)}")
+            import traceback
+            traceback.print_exc()
+            # NO FALLBACK - Let the error bubble up
+            raise e
     
-    def _fallback_extraction(self, user_message: str) -> TravelInfo:
-        """
-        Fallback extraction using pattern matching when AI fails
-        
-        Args:
-            user_message: User's message
-            
-        Returns:
-            TravelInfo with basic pattern-matched information
-        """
-        message_lower = user_message.lower().strip()
-        travel_info = TravelInfo()
-        
-        # Time preference patterns
-        time_patterns = {
-            'morning': ['morning', 'am', 'a.m.', 'early', 'dawn'],
-            'afternoon': ['afternoon', 'noon', 'lunch', 'midday'],
-            'evening': ['evening', 'pm', 'p.m.', 'late', 'dusk'],
-            'night': ['night', 'midnight', 'late night']
-        }
-        
-        # Check for time preferences
-        for preference, keywords in time_patterns.items():
-            if any(keyword in message_lower for keyword in keywords):
-                travel_info.time_preference = preference
-                break
-        
-        # Check for "after X AM/PM" patterns
-        if 'after' in message_lower and ('am' in message_lower or 'a.m.' in message_lower):
-            travel_info.time_preference = 'morning'
-        elif 'after' in message_lower and ('pm' in message_lower or 'p.m.' in message_lower):
-            travel_info.time_preference = 'evening'
-        
-        # Check for "anytime" - treat as flexible morning preference
-        if 'anytime' in message_lower or 'any time' in message_lower:
-            travel_info.time_preference = 'anytime'
-        
-        return travel_info
+    # FALLBACK EXTRACTION REMOVED - NO FALLBACKS ALLOWED
     
     def extract_date_time_specifically(self, user_message: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
